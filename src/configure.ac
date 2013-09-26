@@ -33,4 +33,4 @@ AX_LIB_SAMTOOLS(0.1.3,[have_bam=yes],[AC_MSG_ERROR([Abort: no samtools. Please r
 PKG_PROG_PKG_CONFIG
 PKG_CHECK_MODULES(PNG,libpng)
 
-AC_OUTPUT(Makefile shared/Makefile calibration_pu/Makefile predictor_pu/Makefile spatial_filter/Makefile error_analysis/Makefile)
+AC_OUTPUT(Makefile shared/Makefile calibration_pu/Makefile predictor_pu/Makefile spatial_filter/Makefile error_analysis/Makefile spatial_filter_mkII/Makefile)
