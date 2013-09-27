@@ -63,6 +63,7 @@
 #include "pb_config.h"
 #endif
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
@@ -123,7 +124,7 @@ typedef struct {
     int *tileArray;
 	char *working_dir;
 	char *output;
-	int read_length[3];
+	int read_length[N_READS];
 	int dump;
 	int calculate;
 	int apply;
@@ -381,59 +382,6 @@ int dump_bam_file(Settings *s, samfile_t *fp_bam, size_t *nreads)
 }
 
 
-static int updateRegionTable(Settings *s, HashTable ***rts_hash, int read, int x, int y, int *read_mismatch)
-{
-    int ix = x2region(x, s->region_size);
-    int iy = x2region(y, s->region_size);
-	int cycle;
-
-    /* update region table */
-	for (cycle = 0; cycle < s->read_length[read]; cycle++) {
-        HashTable *rt_hash = rts_hash[read][cycle];
-        char key[100];
-        char *cp;
-        HashItem *hi;
-        HashData hd;
-        RegionTable *rt;
-
-        cp = append_int(key, ix);
-        cp = append_char(cp, ':');
-        cp = append_int(cp, iy);
-        *cp = 0;
-        if( NULL == (hi = HashTableSearch(rt_hash, key, strlen(key))) ){
-            hd.p = smalloc(sizeof(RegionTable));
-            if( NULL == HashTableAdd(rt_hash, key, strlen(key), hd, NULL) ) {
-                fprintf(stderr, "ERROR: building rts hash table\n");
-                exit(EXIT_FAILURE);
-            }
-            if( ix >= s->nregions_x ) s->nregions_x = ix + 1;
-            if( iy >= s->nregions_y ) s->nregions_y = iy + 1;
-            rt = (RegionTable *)hd.p;
-            rt->align     = 0;
-            rt->mismatch  = 0;
-            rt->insertion = 0;
-            rt->deletion  = 0;
-            rt->soft_clip = 0;
-            rt->known_snp = 0;
-            rt->state     = 0;            
-        }else{
-            rt = (RegionTable *)hi->data.p;
-        }
-        
-		if (read_mismatch[cycle] & BASE_INSERTION) rt->insertion++;
-		if (read_mismatch[cycle] & BASE_DELETION) rt->deletion++;
-		if (read_mismatch[cycle] & BASE_SOFT_CLIP) rt->soft_clip++;
-		if (read_mismatch[cycle] & BASE_KNOWN_SNP) { 
-			rt->known_snp++;
-		} else {
-			if (read_mismatch[cycle] & BASE_ALIGN) rt->align++;
-			if (read_mismatch[cycle] & BASE_MISMATCH) rt->mismatch++;
-		}
-	}
-
-	return 0;
-}
-
 /*
  * Generates two pictures per tile per cycle
  * INDEL binary picture
@@ -450,8 +398,12 @@ typedef struct TileImage {
 	png_bytepp bitmap;
 } TileImage_t;
 
-const int X_LEN = (2048+100)/4;
-const int Y_LEN = (10000+100)/4;
+#define DOWNSAMPLE_AMOUNT 4
+static const int X_LEN = (2048*3+100)/DOWNSAMPLE_AMOUNT;
+static const int Y_LEN = (10000*16+100)/DOWNSAMPLE_AMOUNT;
+
+#define ROWBINARYSET(x,value_array) value_array[y/DOWNSAMPLE_AMOUNT][x/(8*DOWNSAMPLE_AMOUNT)]|=1<<(x/DOWNSAMPLE_AMOUNT)%8
+
 
 #define QUAL_PALETTE_LEN 2
 static const png_color QUAL_PALETTE[QUAL_PALETTE_LEN] = {
@@ -459,18 +411,24 @@ static const png_color QUAL_PALETTE[QUAL_PALETTE_LEN] = {
 	{ .red = 0xFF, .green = 0x00, .blue = 0x00 },
 };
 
-static TileImage_t* createImage(const char* prefix, int tile, int read)
+static TileImage_t* createImage(TileImage_t* existing, const char* prefix, const char* ftype, int surface, int read, int cycle)
 {
 	char buf_png[255];
-	sprintf(buf_png, "%s_%d_%d.png", prefix, tile, read);
+	sprintf(buf_png, "%s_%s_%d_%d_%d.png", prefix, ftype, surface, read, cycle);
+	fprintf(stderr, "image name (%s)\n", buf_png);
 
-	TileImage_t* img = (TileImage_t*)malloc(sizeof(TileImage_t));
+
+	TileImage_t* img;
+	if (existing == NULL)
+		img = (TileImage_t*)malloc(sizeof(TileImage_t));
+	else
+		img = existing;
 	
 	img->png = png_create_write_struct
 	(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 	if (!img->png)
 	{
-		free(img);
+		if (!existing) free(img);
 		return NULL;
 	}
 	
@@ -479,7 +437,7 @@ static TileImage_t* createImage(const char* prefix, int tile, int read)
 	{
 		png_destroy_write_struct(&img->png,
 								 (png_infopp)NULL);
-		free(img);
+		if (!existing) free(img);
 		return NULL;
 	}
 
@@ -488,7 +446,7 @@ static TileImage_t* createImage(const char* prefix, int tile, int read)
 	{
 		png_destroy_write_struct(&img->png,
 								 &img->png_header);
-		free(img);
+		if (!existing) free(img);
 		return NULL;
 	}
 
@@ -503,7 +461,7 @@ static TileImage_t* createImage(const char* prefix, int tile, int read)
 		png_destroy_write_struct(&img->png,
 								 &img->png_header);
 		fclose(img->file_ptr);
-		free(img);
+		if (!existing) free(img);
 		return NULL;
 	}
 	
@@ -516,7 +474,7 @@ static TileImage_t* createImage(const char* prefix, int tile, int read)
 									 &img->png_header);
 			fclose(img->file_ptr);
 			free(img->bitmap);
-			free(img);
+			if (!existing) free(img);
 			return NULL;
 		}
 		memset(img->bitmap[i], 0, png_get_rowbytes(img->png,img->png_header));
@@ -539,17 +497,18 @@ static void writeCloseImage(TileImage_t* img)
 	fclose(img->file_ptr);
 }
 
-#define ROWBINARYSET(x,value_array) value_array[x/8]|=1<<x%8
-
-static void updateRegionImage(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
+static bool updateSurfaceCycleImage(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
 	int cycle;
+	y /= 10;
+	x /= 10;
 	for (cycle = 0; cycle < s->read_length[read]; cycle++) {
 		if (read_mismatch[cycle] & (BASE_INSERTION|BASE_DELETION)) {
-			ROWBINARYSET(x,row_indel_image[read]->bitmap[y]);
+			ROWBINARYSET(x,y,row_indel_image[read][cycle].bitmap);
 		} else if (!(read_mismatch[cycle]&BASE_KNOWN_SNP) && (read_mismatch[cycle] & BASE_MISMATCH) ){
-			ROWBINARYSET(x,row_mismatch_image[read]->bitmap[y]);
+			ROWBINARYSET(x,y,row_mismatch_image[read][cycle].bitmap);
 		}
 	}
+	return true;
 }
 
 /*
@@ -561,13 +520,12 @@ static void updateRegionImage(Settings *s, TileImage_t** row_mismatch_image, Til
  * Returns: 0 written for success
  *	   -1 for failure
  */
-void makeRegionTable(Settings *s, samfile_t *fp_bam, HashTable ***rts_hash, int *ntiles, size_t * nreads)
-{
-	HashData hd;
-	int lane = -1;
-	int tile = -1;
+static const int N_SURFACES = 2;
 
-	int ntiles_bam = 0;
+void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)], TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)], int *ntiles, size_t * nreads)
+{
+	int lane = -1;
+
 	size_t nreads_bam = 0;
 
 	static const int bam_read_buff_size = 1024;
@@ -575,18 +533,27 @@ void makeRegionTable(Settings *s, samfile_t *fp_bam, HashTable ***rts_hash, int 
 	int bam_read_qual[bam_read_buff_size];
 	int bam_read_mismatch[bam_read_buff_size];
 
-    int itile, read;
-
 	bam1_t *bam = bam_init1();
 
-	s->tile_hash = HashTableCreate(N_TILES, HASH_DYNAMIC_SIZE | HASH_FUNC_JENKINS3);
-	if (!s->tile_hash) die("Failed to create tile_hash\n");
+    int isurface, iread, icycle;
+	
+	fprintf(stderr, "entering image init loop\n");
+    for(isurface=0;isurface < N_SURFACES; ++isurface) {
+		fprintf(stderr, "entering image init loop surface %d\n", isurface);
+		for(iread=0; iread < (N_READS-1); ++iread) {
+			fprintf(stderr, "entering image init loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
+			s->read_length[iread] = 100; // HACK!
+			tile_img_mismatch[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
+			tile_img_indel[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
+			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
+				fprintf(stderr, "trace: setting up image: surface %d, read %d, cycle %d\n", isurface, iread, icycle);
+				if (createImage(&tile_img_mismatch[isurface][iread][icycle], s->output, "mm", isurface, iread, icycle) == NULL) die("ERROR: allocating image memory surface %i read %i cycle %i.\n", isurface, iread, icycle);
+				if (createImage(&tile_img_indel[isurface][iread][icycle], s->output, "id", isurface, iread, icycle) == NULL) die("ERROR: allocating image memory surface %i read %i cycle %i.\n", isurface, iread, icycle);
+			}
+		}
+	}
 
-    for(itile=0;itile<N_TILES;itile++)
-        for(read=0;read<N_READS;read++)
-            rts_hash[itile*N_READS+read] = NULL;
-
-    itile = -1;
+	fprintf(stderr, "entering bam read loop\n");
 
 	/* loop over reads in the bam file */
 	while (1) {
@@ -606,6 +573,9 @@ void makeRegionTable(Settings *s, samfile_t *fp_bam, HashTable ***rts_hash, int 
 
 		parse_bam_alignments(fp_bam, bam, bam_read_seq, bam_read_qual, NULL, bam_read_mismatch,
                                                   bam_read_buff_size, s->snp_hash);
+		char parseTile[10];
+		snprintf(parseTile, 10, "%d", bam_tile);
+		int surface = parseTile[0] == '1' ? 0 : 1;
 
 		read_length = strlen(bam_read_seq);
 		if (0 == s->read_length[bam_read]) {
@@ -625,50 +595,23 @@ void makeRegionTable(Settings *s, samfile_t *fp_bam, HashTable ***rts_hash, int 
 			die("Error: Inconsistent lane within bam file.\nHave %d, previously it was %d.\n", bam_lane, lane);
 		}
 
-		// lookup itile from tile in tile hash
-		HashItem *tileItem = HashTableSearch(s->tile_hash, (char *)&bam_tile, sizeof(bam_tile));
-		if (tileItem) {
-			// if tile found, extract itile
-			itile = tileItem->data.i;
-		} else {
-			// if tile not found in hash, add it
-			hd.i = ntiles_bam++;
-			if (HashTableAdd(s->tile_hash, (char *)&bam_tile, sizeof(bam_tile), hd, NULL) == NULL)
-				die("Failed to add tile %d to tile_hash\n", bam_tile);
-			if (!s->quiet) display("Processing tile %i (%lu)\n", bam_tile, nreads_bam);
-			itile = hd.i;
-		}
-
-        if (NULL == rts_hash[itile*N_READS+bam_read]) {
-            int cycle;
-            rts_hash[itile*N_READS+bam_read] = smalloc(read_length * sizeof(HashTable *));
-            for(cycle=0;cycle<read_length;cycle++) {
-                rts_hash[itile*N_READS+bam_read][cycle] = HashTableCreate(0, HASH_DYNAMIC_SIZE | HASH_FUNC_JENKINS3);
-            }
-        }
-
-		// updateRegionImage(s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, bam_read, bam_x, bam_y, bam_read_mismatch)
-		
-        if (0 != updateRegionTable(s, &rts_hash[itile*N_READS], bam_read, bam_x, bam_y, bam_read_mismatch)) {
-			die("ERROR: updating quality values for tile %i.\n", tile);
+		if (!updateSurfaceCycleImage(s, tile_img_mismatch[surface], tile_img_indel[surface], (bam_read-1), bam_x, bam_y, bam_read_mismatch)) {
+			die("ERROR: updating image values for surface %i.\n", surface);
 		}
 		nreads_bam++;
 	}
 
 	bam_destroy1(bam);
-
-	// create a sorted tile array from the tile hash
-	s->tileArray = smalloc(ntiles_bam * sizeof(int));
-	HashIter *iter = HashTableIterCreate();
-	HashItem *tileItem;
-    int i = 0;
-    while ((tileItem = HashTableIterNext(s->tile_hash, iter))) {
-		if (itile>=ntiles_bam) die("Too many tiles!\n");
-		s->tileArray[i++] = *(int*)tileItem->key;
+	
+    for(isurface=0;isurface<N_SURFACES; ++isurface) {
+		for(iread=0; iread<(N_READS-1); ++iread) {
+			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
+				writeCloseImage(&tile_img_mismatch[isurface][iread][icycle]);
+				writeCloseImage(&tile_img_indel[isurface][iread][icycle]);
+			}
+		}
 	}
-    qsort(s->tileArray, ntiles_bam, sizeof(int), tile_sort);
 
-    *ntiles = ntiles_bam;
 	*nreads = nreads_bam;
 }
 
@@ -818,7 +761,9 @@ void calculateFilter(Settings *s)
 	int ntiles = 0;
 	size_t nreads = 0;
 
-	//HashTable **rts_hash[N_TILES*N_READS];
+	// One per surface
+	TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)];
+	TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)];
 
     if( NULL == s->filter) {
         display("Writing filter to stdout\n");
@@ -830,7 +775,7 @@ void calculateFilter(Settings *s)
 		die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
 	}
 
-	//makeRegionTable(s, fp_input_bam, rts_hash, &ntiles, &nreads);
+	makeTileImages(s, fp_input_bam, tile_img_mismatch, tile_img_indel, &ntiles, &nreads);
 
 	/* close the bam file */
 	samclose(fp_input_bam);
