@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright (c) 2006-2009, Genome Research Ltd (GRL).
+ * Copyright (c) 2006-2009,2013, Genome Research Ltd (GRL).
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -39,8 +39,7 @@
  */
 
 /*
- * Author: Steven Leonard, Jan 2009
- *
+ * Author: Martin Pollard, 2013 *
  * This code looks for spatial features given an aligned bam file
  *
  */
@@ -575,7 +574,11 @@ void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismat
                                                   bam_read_buff_size, s->snp_hash);
 		char parseTile[10];
 		snprintf(parseTile, 10, "%d", bam_tile);
-		int surface = parseTile[0] == '1' ? 0 : 1;
+		int surface = parseTile[0] - '1';
+		int swath = parseTile[1] - '1';
+		int tile = atoi(parseTile+2)-1;
+		x += (swath*20480); // FIXME: get these two from settings?
+		y += (tile*100000);
 
 		read_length = strlen(bam_read_seq);
 		if (0 == s->read_length[bam_read]) {
