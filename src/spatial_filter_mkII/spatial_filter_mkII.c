@@ -406,8 +406,8 @@ static const int Y_LEN = (10000*16+100)/DOWNSAMPLE_AMOUNT;
 
 #define QUAL_PALETTE_LEN 2
 static const png_color QUAL_PALETTE[QUAL_PALETTE_LEN] = {
+	{ .red = 0xFF, .green = 0xFF, .blue = 0xFF },
 	{ .red = 0x00, .green = 0x00, .blue = 0x00 },
-	{ .red = 0xFF, .green = 0x00, .blue = 0x00 },
 };
 
 static TileImage_t* createImage(TileImage_t* existing, const char* prefix, const char* ftype, int surface, int read, int cycle)
