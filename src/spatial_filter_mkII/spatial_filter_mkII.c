@@ -401,7 +401,7 @@ typedef struct TileImage {
 static const int X_LEN = (2048*3+100)/DOWNSAMPLE_AMOUNT;
 static const int Y_LEN = (10000*16+100)/DOWNSAMPLE_AMOUNT;
 
-#define ROWBINARYSET(x,value_array) value_array[y/DOWNSAMPLE_AMOUNT][x/(8*DOWNSAMPLE_AMOUNT)]|=1<<(x/DOWNSAMPLE_AMOUNT)%8
+#define ROWBINARYSET(x,y,value_array) value_array[y/DOWNSAMPLE_AMOUNT][x/(8*DOWNSAMPLE_AMOUNT)]|=1<<(x/DOWNSAMPLE_AMOUNT)%8
 
 
 #define QUAL_PALETTE_LEN 2
@@ -577,8 +577,8 @@ void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismat
 		int surface = parseTile[0] - '1';
 		int swath = parseTile[1] - '1';
 		int tile = atoi(parseTile+2)-1;
-		x += (swath*20480); // FIXME: get these two from settings?
-		y += (tile*100000);
+		bam_x += (swath*20480); // FIXME: get these two constants from settings?
+		bam_y += (tile*100000);
 
 		read_length = strlen(bam_read_seq);
 		if (0 == s->read_length[bam_read]) {
