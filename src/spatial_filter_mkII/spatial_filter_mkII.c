@@ -394,6 +394,7 @@ typedef struct TileImage {
 	FILE* file_ptr;
 	png_structp png;
 	png_infop png_header;
+	png_infop png_footer;
 	png_bytepp bitmap;
 } TileImage_t;
 
@@ -402,13 +403,6 @@ static const int X_LEN = (2048*3+100)/DOWNSAMPLE_AMOUNT;
 static const int Y_LEN = (10000*16+100)/DOWNSAMPLE_AMOUNT;
 
 #define ROWBINARYSET(x,y,value_array) value_array[y/DOWNSAMPLE_AMOUNT][x/(8*DOWNSAMPLE_AMOUNT)]|=1<<(x/DOWNSAMPLE_AMOUNT)%8
-
-
-#define QUAL_PALETTE_LEN 2
-static const png_color QUAL_PALETTE[QUAL_PALETTE_LEN] = {
-	{ .red = 0xFF, .green = 0xFF, .blue = 0xFF },
-	{ .red = 0x00, .green = 0x00, .blue = 0x00 },
-};
 
 static TileImage_t* createImage(TileImage_t* existing, const char* prefix, const char* ftype, int surface, int read, int cycle)
 {
@@ -450,11 +444,81 @@ static TileImage_t* createImage(TileImage_t* existing, const char* prefix, const
 	}
 
 	png_init_io(img->png, img->file_ptr);
-	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 1, PNG_COLOR_TYPE_PALETTE, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-	png_set_PLTE(img->png, img->png_header, QUAL_PALETTE, QUAL_PALETTE_LEN);
+	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 1, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 	png_write_info(img->png, img->png_header);
 	img->bitmap = (png_bytepp)png_malloc(img->png, Y_LEN * sizeof(png_bytep));
 
+	if (!img->bitmap)
+	{
+		png_destroy_write_struct(&img->png,
+								 &img->png_header);
+		fclose(img->file_ptr);
+		if (!existing) free(img);
+		return NULL;
+	}
+	
+	int i;
+	for (i = 0; i < Y_LEN; ++i) {
+		img->bitmap[i] = (png_bytep)png_malloc(img->png, png_get_rowbytes(img->png,img->png_header));
+		if (!img->bitmap[i])
+		{
+			png_destroy_write_struct(&img->png,
+									 &img->png_header);
+			fclose(img->file_ptr);
+			free(img->bitmap);
+			if (!existing) free(img);
+			return NULL;
+		}
+		memset(img->bitmap[i], 0, png_get_rowbytes(img->png,img->png_header));
+	}
+	return img;
+}
+
+/// HAAAAAACK!
+static TileImage_t* createGrayImage(TileImage_t* existing, const char* prefix, const char* ftype, int surface, int read, int cycle)
+{
+	char buf_png[255];
+	sprintf(buf_png, "%s_%s_%d_%d_%d.png", prefix, ftype, surface, read, cycle);
+	fprintf(stderr, "image name (%s)\n", buf_png);
+	
+	
+	TileImage_t* img;
+	if (existing == NULL)
+		img = (TileImage_t*)malloc(sizeof(TileImage_t));
+	else
+		img = existing;
+	
+	img->png = png_create_write_struct
+	(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!img->png)
+	{
+		if (!existing) free(img);
+		return NULL;
+	}
+	
+	img->png_header = png_create_info_struct(img->png);
+	if (!img->png_header)
+	{
+		png_destroy_write_struct(&img->png,
+								 (png_infopp)NULL);
+		if (!existing) free(img);
+		return NULL;
+	}
+	
+	img->file_ptr = fopen(buf_png, "wb");
+	if (!img->file_ptr)
+	{
+		png_destroy_write_struct(&img->png,
+								 &img->png_header);
+		if (!existing) free(img);
+		return NULL;
+	}
+	
+	png_init_io(img->png, img->file_ptr);
+	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+	png_write_info(img->png, img->png_header);
+	img->bitmap = (png_bytepp)png_malloc(img->png, Y_LEN * sizeof(png_bytep));
+	
 	if (!img->bitmap)
 	{
 		png_destroy_write_struct(&img->png,
@@ -616,6 +680,154 @@ void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismat
 	}
 
 	*nreads = nreads_bam;
+}
+
+double** makeGaussian(double sigma, size_t * n_out)
+{
+	size_t n = ceil(sigma*sqrt(-2.0*log(0.2)))+1.0; // TODO determine size based on sigma
+	size_t array_size = (n*2 + 1);
+	double** retval = malloc(sizeof(double*)*array_size);
+	size_t i;
+	for (i = 0; i < array_size; ++i) retval[i] = malloc(sizeof(double) * array_size);
+	
+	// First create matrix
+	double divisor = 0;
+	double two_sigma_sq = 2.0 * pow(sigma,2);
+
+	int cov_x, cov_y;
+	for (cov_y = -n; cov_y <= n; cov_y++) {
+		for (cov_x = -n; cov_x <= n; cov_x++) {
+			double value = 0.0;
+			value = exp(-((pow(cov_x,2.0) / (two_sigma_sq)) + ( pow(cov_y,2.0) / (two_sigma_sq) )  ));
+			retval[cov_y+n][cov_x+n] = value;
+			divisor += value;
+		}
+	}
+	
+	// next normalise it
+	int x, y;
+	for (y = 0; y < array_size; ++y) {
+		for (x = 0; x < array_size; ++x) {
+			retval[y][x] /= divisor;
+		}
+	}
+	
+	
+	*n_out = n;
+	return retval;
+}
+
+void applyGaussian(png_bytepp row_p, png_bytepp output_rows, const int width, const int height, double** kernel, const size_t n)
+{
+	int x_iter, y_iter;
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		for (x_iter= 0; x_iter < width; ++x_iter) {
+			// apply convolution to pixel at (x_iter,y_iter)
+			double accum = 0;
+			int cov_x, cov_y;
+			for (cov_y = -n; cov_y <= n; cov_y++) {
+				for (cov_x = -n; cov_x <= n; cov_x++) {
+					// Get target input coords
+					int target_x = x_iter + cov_x;
+					int target_y = y_iter + cov_y;
+					target_x = target_x >= 0 ? target_x : 0;
+					target_y = target_y >= 0 ? target_y : 0;
+					target_x = target_x < width ? target_x : width - 1;
+					target_y = target_y < height ? target_y : height - 1;
+					
+					accum += row_p[target_y][target_x] * kernel[cov_y+n][cov_x+n];
+				}
+			}
+			output_rows[y_iter][x_iter] = (png_byte)accum;
+		}
+	}
+}
+
+typedef struct roi {
+	int x;
+	int y;
+	int width;
+	int height;
+} roi_t;
+
+TileImage_t* readImage(const char* fn)
+{
+	TileImage_t* retval = malloc(sizeof(TileImage_t));
+	retval->file_ptr = fopen(fn, "rb");
+	if (!retval->file_ptr) {
+		free(retval);
+		return NULL;
+	}
+
+	// Check this is a png
+	png_byte buf[8];
+
+	if (fread(&buf, 8, 1, retval->file_ptr) != 1 || png_sig_cmp(buf, 0, 8)) {
+		fclose(retval->file_ptr);
+		free(retval);
+		return NULL;
+	}
+	
+	if ((retval->png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL)) == NULL) {
+		fclose(retval->file_ptr);
+		free(retval);
+		return NULL;
+	}
+	
+	if ((retval->png_header = png_create_info_struct(retval->png)) == NULL) {
+		png_destroy_read_struct(&retval->png, NULL, NULL);
+		fclose(retval->file_ptr);
+		free(retval);
+		return NULL;
+	}
+
+	if ((retval->png_footer = png_create_info_struct(retval->png)) == NULL) {
+		png_destroy_read_struct(&retval->png, &retval->png_header, NULL);
+		fclose(retval->file_ptr);
+		free(retval);
+		return NULL;
+	}
+
+	png_set_sig_bytes(retval->png, 8);  // Mark that we've already done the sigcheck
+
+	png_init_io(retval->png, retval->file_ptr);
+	png_set_expand_gray_1_2_4_to_8(retval->png);
+	png_read_png(retval->png, retval->png_header, PNG_TRANSFORM_EXPAND|PNG_TRANSFORM_INVERT_MONO, NULL);
+	retval->bitmap = png_get_rows(retval->png, retval->png_header);
+	
+	return retval;
+}
+
+void makeFilterImage(Settings *s, TileImage_t* image)
+{
+	// Read image file
+	// Convert to grayscale
+	
+	// Gaussian convolution 10 pixel radius sigma
+	
+	TileImage_t* outimg = createGrayImage(NULL, "hack", "filter", 1, 1, 99);
+	size_t n;
+	double** kernel = makeGaussian(10, &n);
+	applyGaussian(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
+	
+	// Threshold back to binary
+	// Detect ROI by 4 connected labelling
+	// Add to hash
+	/// HACK
+	writeCloseImage(outimg);
+}
+
+void makeFilter(Settings *s)
+{
+	TileImage_t* image = readImage("arun2_mm_1_1_99.png");
+	makeFilterImage(s, image);
+	
+}
+
+int filter_bam_new(Settings * s, samfile_t * fp_in_bam, samfile_t * fp_out_bam,
+			   size_t * nreads, size_t * nfiltered)
+{
+	return 0; // GNDN
 }
 
 /*
@@ -1088,6 +1300,11 @@ int main(int argc, char **argv)
 
 	/* Dump the filter file */
 	if (dumpFilter) dumpFilterFile(settings.filter);
+	
+	/// HACK TEST
+	makeFilter(&settings);
+	///
+	
 
 	/* calculate the filter */
     if (settings.calculate) {
