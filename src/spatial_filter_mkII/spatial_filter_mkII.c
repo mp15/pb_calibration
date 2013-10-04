@@ -806,7 +806,7 @@ TileImage_t* readImage(const char* fn)
 	return retval;
 }
 
-void makeFilterImage(Settings *s, TileImage_t* image)
+void make_filter_image(Settings *s, TileImage_t* image)
 {
 	// Read image file
 	// Convert to grayscale
@@ -819,16 +819,17 @@ void makeFilterImage(Settings *s, TileImage_t* image)
 	applyGaussianAndThreshold(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
 	
 	// Detect ROI by 4 connected labelling
-
+	connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
+	
 	// Add to hash
 	/// HACK
 	writeCloseImage(outimg);
 }
 
-void makeFilter(Settings *s)
+void make_filter(Settings *s)
 {
 	TileImage_t* image = readImage("arun2_mm_1_1_99.png");
-	makeFilterImage(s, image);
+	make_filter_image(s, image);
 	
 }
 
@@ -1310,7 +1311,7 @@ int main(int argc, char **argv)
 	if (dumpFilter) dumpFilterFile(settings.filter);
 	
 	/// HACK TEST
-	makeFilter(&settings);
+	make_filter(&settings);
 	///
 	
 
