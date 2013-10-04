@@ -682,9 +682,10 @@ void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismat
 	*nreads = nreads_bam;
 }
 
+#define PRECISION 0.6
 double** makeGaussian(double sigma, size_t * n_out)
 {
-	size_t n = ceil(sigma*sqrt(-2.0*log(0.2)))+1.0; // TODO determine size based on sigma
+	size_t n = ceil(sigma*sqrt(-2.0*log(PRECISION)))+1.0; // determine size based on sigma
 	size_t array_size = (n*2 + 1);
 	double** retval = malloc(sizeof(double*)*array_size);
 	size_t i;
@@ -695,8 +696,8 @@ double** makeGaussian(double sigma, size_t * n_out)
 	double two_sigma_sq = 2.0 * pow(sigma,2);
 
 	int cov_x, cov_y;
-	for (cov_y = -n; cov_y <= n; cov_y++) {
-		for (cov_x = -n; cov_x <= n; cov_x++) {
+	for (cov_y = -((int)n); cov_y <= (int)n; cov_y++) {
+		for (cov_x = -((int)n); cov_x <= (int)n; cov_x++) {
 			double value = 0.0;
 			value = exp(-((pow(cov_x,2.0) / (two_sigma_sq)) + ( pow(cov_y,2.0) / (two_sigma_sq) )  ));
 			retval[cov_y+n][cov_x+n] = value;
@@ -712,12 +713,13 @@ double** makeGaussian(double sigma, size_t * n_out)
 		}
 	}
 	
-	
 	*n_out = n;
 	return retval;
 }
 
-void applyGaussian(png_bytepp row_p, png_bytepp output_rows, const int width, const int height, double** kernel, const size_t n)
+#define THRESHOLD 245.0
+
+void applyGaussianAndThreshold(png_bytepp row_p, png_bytepp output_rows, const int width, const int height, double** kernel, const size_t n)
 {
 	int x_iter, y_iter;
 	for (y_iter = 0; y_iter < height; ++y_iter) {
@@ -725,8 +727,8 @@ void applyGaussian(png_bytepp row_p, png_bytepp output_rows, const int width, co
 			// apply convolution to pixel at (x_iter,y_iter)
 			double accum = 0;
 			int cov_x, cov_y;
-			for (cov_y = -n; cov_y <= n; cov_y++) {
-				for (cov_x = -n; cov_x <= n; cov_x++) {
+			for (cov_y = -(int)n; cov_y <= (int)n; cov_y++) {
+				for (cov_x = -(int)n; cov_x <= (int)n; cov_x++) {
 					// Get target input coords
 					int target_x = x_iter + cov_x;
 					int target_y = y_iter + cov_y;
@@ -738,7 +740,13 @@ void applyGaussian(png_bytepp row_p, png_bytepp output_rows, const int width, co
 					accum += row_p[target_y][target_x] * kernel[cov_y+n][cov_x+n];
 				}
 			}
-			output_rows[y_iter][x_iter] = (png_byte)accum;
+			// And threshold
+			if (accum < THRESHOLD) {
+				output_rows[y_iter][x_iter] = 0;
+			} else {
+				output_rows[y_iter][x_iter] = 255;
+			}
+			//output_rows[y_iter][x_iter] = (png_byte)accum;
 		}
 	}
 }
@@ -804,14 +812,14 @@ void makeFilterImage(Settings *s, TileImage_t* image)
 	// Convert to grayscale
 	
 	// Gaussian convolution 10 pixel radius sigma
-	
+	// Threshold back to binary
 	TileImage_t* outimg = createGrayImage(NULL, "hack", "filter", 1, 1, 99);
 	size_t n;
 	double** kernel = makeGaussian(10, &n);
-	applyGaussian(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
+	applyGaussianAndThreshold(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
 	
-	// Threshold back to binary
 	// Detect ROI by 4 connected labelling
+
 	// Add to hash
 	/// HACK
 	writeCloseImage(outimg);
