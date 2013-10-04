@@ -806,6 +806,64 @@ TileImage_t* readImage(const char* fn)
 	return retval;
 }
 
+void connected_four(png_bytepp bitmap, const int width, const int height)
+{
+	// F. Chang, A linear-time component-labeling algorithm using contour tracing technique, Computer Vision and Image Understanding, vol. 93, no. 2, pp. 206-220, 2004.
+	// based on: https://en.wikipedia.org/w/index.php?title=Connected-component_labeling&oldid=575300229
+	int x_iter, y_iter;
+	int next_label = 1;
+	const int BACKGROUND = 255;
+	int** label_map = malloc(sizeof(int*)*height);
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		label_map[y_iter] = calloc(width, sizeof(int));
+		for (x_iter= 0; x_iter < width; ++x_iter) {
+			if (bitmap[y_iter][x_iter] == BACKGROUND) continue;
+			
+			if (x_iter != 0 && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]) {
+				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]
+					   && (label_map[y_iter][x_iter] != label_map[y_iter][x_iter-1])
+					   && (label_map[y_iter][x_iter-1] != label_map[y_iter][x_iter])) {
+				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1] > label_map[y_iter-1][x_iter] ? label_map[y_iter][x_iter-1] : label_map[y_iter-1][x_iter];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
+				label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
+				label_map[y_iter][x_iter] = next_label++;
+			}
+		}
+	}
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		for (x_iter= 0; x_iter < width; ++x_iter) {
+			if (bitmap[y_iter][x_iter] == BACKGROUND) continue;
+			
+			if (x_iter != 0 && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]) {
+				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]
+					   && (label_map[y_iter][x_iter] != label_map[y_iter][x_iter-1])
+					   && (label_map[y_iter][x_iter-1] != label_map[y_iter][x_iter])) {
+				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1] > label_map[y_iter-1][x_iter] ? label_map[y_iter][x_iter-1] : label_map[y_iter-1][x_iter];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
+				label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
+				label_map[y_iter][x_iter] = next_label++;
+			}
+		}
+	}
+	printf("max label %d", next_label);
+}
+
 void make_filter_image(Settings *s, TileImage_t* image)
 {
 	// Read image file
