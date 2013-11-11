@@ -806,10 +806,113 @@ TileImage_t* readImage(const char* fn)
 	return retval;
 }
 
+typedef struct uf_array
+{
+	size_t max_uf;
+	int* parent;
+} uf_array_t;
+
+void init_uf_array(uf_array_t* array)
+{
+	array->max_uf = 100;
+	array->parent = calloc(array->max_uf,sizeof(int));
+}
+
+static const int UF_INCREMENT = 100;
+
+void uf_union(int parent, int child, uf_array_t* uf_array_data)
+{
+	if (child >= uf_array_data->max_uf) { // if we're bigger than existing array make it bigger
+		int from = uf_array_data->max_uf;
+		uf_array_data->max_uf += UF_INCREMENT;
+		uf_array_data->parent = realloc(uf_array_data->parent, uf_array_data->max_uf*sizeof(int));
+		memset(uf_array_data->parent+from, 0, UF_INCREMENT*sizeof(int)); // Zero out new memory
+	}
+	int j = parent;
+	int k = child;
+	while (uf_array_data->parent[j] != 0)
+		j = uf_array_data->parent[j];
+	while (uf_array_data->parent[k] != 0)
+		k = uf_array_data->parent[k];
+	if (j!=k)
+		uf_array_data->parent[k] = j;
+}
+
+int uf_find(int label, uf_array_t* uf_array_data){
+	if ( label >= uf_array_data->max_uf)
+		return label;
+	int min = label;
+	while (uf_array_data->parent[min] != 0)
+		min = uf_array_data->parent[min];
+	return min;
+}
+
 void connected_four(png_bytepp bitmap, const int width, const int height)
 {
-	// F. Chang, A linear-time component-labeling algorithm using contour tracing technique, Computer Vision and Image Understanding, vol. 93, no. 2, pp. 206-220, 2004.
 	// based on: https://en.wikipedia.org/w/index.php?title=Connected-component_labeling&oldid=575300229
+	// and http://www.cse.msu.edu/~stockman/Book/2002/Chapters/ch3.pdf
+	int x_iter, y_iter;
+	int next_label = 1;
+	const int BACKGROUND_COLOUR = 255;
+	int** label_map = malloc(sizeof(int*)*height);
+	uf_array_t uf_array_data;
+	init_uf_array(&uf_array_data);
+	
+	// First pass: record equiv and assign temp labels
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		label_map[y_iter] = calloc(width, sizeof(int));
+		for (x_iter = 0; x_iter < width; ++x_iter) {
+			if (bitmap[y_iter][x_iter] == BACKGROUND_COLOUR) continue;  // ignore white pixels
+			if (x_iter == 0 && y_iter == 0 ) next_label++; // special case
+			else if (x_iter != 0 && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]) {
+				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]
+					   && (label_map[y_iter][x_iter] != label_map[y_iter][x_iter-1])
+					   && (label_map[y_iter][x_iter] != label_map[y_iter-1][x_iter])) {
+				if (label_map[y_iter][x_iter-1] > label_map[y_iter-1][x_iter]) {
+					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+					uf_union(label_map[y_iter][x_iter],label_map[y_iter-1][x_iter],&uf_array_data);
+				}
+				else {
+					label_map[y_iter][x_iter] =  label_map[y_iter-1][x_iter];
+					uf_union(label_map[y_iter][x_iter],label_map[y_iter][x_iter-1],&uf_array_data);
+				}
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
+				label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
+			} else if ( x_iter != 0 && y_iter != 0
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
+					   && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
+				label_map[y_iter][x_iter] = next_label++; //
+			}
+		}
+	}
+	printf("max label before reduction: %d\n", next_label);
+	int ml_ii = 0;
+	// second pass: replace temp labels by equiv class
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		for (x_iter = 0; x_iter < width; ++x_iter) {
+			if (bitmap[y_iter][x_iter] == BACKGROUND_COLOUR) continue;  // ignore white pixels
+			
+			label_map[y_iter][x_iter] = uf_find(label_map[y_iter][x_iter], &uf_array_data);
+			ml_ii = label_map[y_iter][x_iter] > ml_ii ? label_map[y_iter][x_iter] : ml_ii;
+		}
+	}
+	printf("max label after reduction: %d\n", ml_ii);
+}
+
+#if 0
+void chang_tracer(int** label_map, const int width, const int height, const int x, const int y) {
+		
+}
+
+// Chang
+void chang(png_bytepp bitmap, const int width, const int height)
+{
+	// F. Chang, A linear-time component-labeling algorithm using contour tracing technique, Computer Vision and Image Understanding, vol. 93, no. 2, pp. 206-220, 2004.
 	int x_iter, y_iter;
 	int next_label = 1;
 	const int BACKGROUND = 255;
@@ -817,52 +920,10 @@ void connected_four(png_bytepp bitmap, const int width, const int height)
 	for (y_iter = 0; y_iter < height; ++y_iter) {
 		label_map[y_iter] = calloc(width, sizeof(int));
 		for (x_iter= 0; x_iter < width; ++x_iter) {
-			if (bitmap[y_iter][x_iter] == BACKGROUND) continue;
-			
-			if (x_iter != 0 && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]) {
-				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]
-					   && (label_map[y_iter][x_iter] != label_map[y_iter][x_iter-1])
-					   && (label_map[y_iter][x_iter-1] != label_map[y_iter][x_iter])) {
-				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1] > label_map[y_iter-1][x_iter] ? label_map[y_iter][x_iter-1] : label_map[y_iter-1][x_iter];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
-				label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
-				label_map[y_iter][x_iter] = next_label++;
-			}
 		}
 	}
-	for (y_iter = 0; y_iter < height; ++y_iter) {
-		for (x_iter= 0; x_iter < width; ++x_iter) {
-			if (bitmap[y_iter][x_iter] == BACKGROUND) continue;
-			
-			if (x_iter != 0 && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]) {
-				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]
-					   && (label_map[y_iter][x_iter] != label_map[y_iter][x_iter-1])
-					   && (label_map[y_iter][x_iter-1] != label_map[y_iter][x_iter])) {
-				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1] > label_map[y_iter-1][x_iter] ? label_map[y_iter][x_iter-1] : label_map[y_iter-1][x_iter];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
-				label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
-				label_map[y_iter][x_iter] = next_label++;
-			}
-		}
-	}
-	printf("max label %d", next_label);
 }
+#endif
 
 void make_filter_image(Settings *s, TileImage_t* image)
 {
@@ -1158,23 +1219,23 @@ void applyFilter(Settings *s)
 void dumpBAM(Settings *s)
 {
 	samfile_t *fp_input_bam;
-		size_t nreads = 0;
+	size_t nreads = 0;
 
-		fp_input_bam = samopen(s->in_bam_file, "rb", 0);
-		if (NULL == fp_input_bam) {
-			die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
-		}
+	fp_input_bam = samopen(s->in_bam_file, "rb", 0);
+	if (NULL == fp_input_bam) {
+		die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
+	}
 
-		if (0 != dump_bam_file(s, fp_input_bam, &nreads)) {
-			die("ERROR: failed to dump bam file %s\n", s->in_bam_file);
-		}
+	if (0 != dump_bam_file(s, fp_input_bam, &nreads)) {
+		die("ERROR: failed to dump bam file %s\n", s->in_bam_file);
+	}
 
-		/* close the bam file */
-		samclose(fp_input_bam);
+	/* close the bam file */
+	samclose(fp_input_bam);
 
-		if (!s->quiet) {
-			display("Dumped %8lu traces\n", nreads);
-		}
+	if (!s->quiet) {
+		display("Dumped %8lu traces\n", nreads);
+	}
 }
 
 void dumpFilterFile(char *filename)
@@ -1255,7 +1316,7 @@ int main(int argc, char **argv)
                };
 
 	int ncmd = 0;
-        char c;
+	char c;
 	while ( (c = getopt_long(argc, argv, "vdcafuDF:b:e:o:i:m:p:s:r:x:y:t:z:qh?", long_options, 0)) != -1) {
 		switch (c) {
 			case 'v':	display("spatial_filter: Version %s\n", version); 
