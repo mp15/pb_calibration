@@ -913,27 +913,6 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 	return label_map;
 }
 
-#if 0
-void chang_tracer(int** label_map, const int width, const int height, const int x, const int y) {
-		
-}
-
-// Chang
-void chang(png_bytepp bitmap, const int width, const int height)
-{
-	// F. Chang, A linear-time component-labeling algorithm using contour tracing technique, Computer Vision and Image Understanding, vol. 93, no. 2, pp. 206-220, 2004.
-	int x_iter, y_iter;
-	int next_label = 1;
-	const int BACKGROUND = 255;
-	int** label_map = malloc(sizeof(int*)*height);
-	for (y_iter = 0; y_iter < height; ++y_iter) {
-		label_map[y_iter] = calloc(width, sizeof(int));
-		for (x_iter= 0; x_iter < width; ++x_iter) {
-		}
-	}
-}
-#endif
-
 void dumpMap(unsigned char** map)
 {
 	TileImage_t* img;
