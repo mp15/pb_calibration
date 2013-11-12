@@ -847,46 +847,54 @@ int uf_find(int label, uf_array_t* uf_array_data){
 	return min;
 }
 
-void connected_four(png_bytepp bitmap, const int width, const int height)
+unsigned char** connected_four(png_bytepp bitmap, const int width, const int height)
 {
 	// based on: https://en.wikipedia.org/w/index.php?title=Connected-component_labeling&oldid=575300229
 	// and http://www.cse.msu.edu/~stockman/Book/2002/Chapters/ch3.pdf
 	int x_iter, y_iter;
-	int next_label = 1;
+	unsigned char next_label = 1;
 	const int BACKGROUND_COLOUR = 255;
-	int** label_map = malloc(sizeof(int*)*height);
+	unsigned char** label_map = malloc(sizeof(unsigned char*)*height);
 	uf_array_t uf_array_data;
 	init_uf_array(&uf_array_data);
 	
 	// First pass: record equiv and assign temp labels
 	for (y_iter = 0; y_iter < height; ++y_iter) {
-		label_map[y_iter] = calloc(width, sizeof(int));
+		label_map[y_iter] = calloc(width, sizeof(unsigned char));
 		for (x_iter = 0; x_iter < width; ++x_iter) {
 			if (bitmap[y_iter][x_iter] == BACKGROUND_COLOUR) continue;  // ignore white pixels
-			if (x_iter == 0 && y_iter == 0 ) next_label++; // special case
-			else if (x_iter != 0 && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]) {
-				label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]
-					   && (label_map[y_iter][x_iter] != label_map[y_iter][x_iter-1])
-					   && (label_map[y_iter][x_iter] != label_map[y_iter-1][x_iter])) {
-				if (label_map[y_iter][x_iter-1] > label_map[y_iter-1][x_iter]) {
+			if (x_iter == 0 || y_iter == 0 ) { // special cases for edges
+				if (x_iter == 0 && y_iter == 0 ) {
+					label_map[y_iter][x_iter] = next_label++;
+				} else if (x_iter == 0 && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]) {
 					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
-					uf_union(label_map[y_iter][x_iter],label_map[y_iter-1][x_iter],&uf_array_data);
+				} else if (y_iter == 0 && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]) {
+					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+				} else {
+					label_map[y_iter][x_iter] = next_label++;
 				}
-				else {
-					label_map[y_iter][x_iter] =  label_map[y_iter-1][x_iter];
-					uf_union(label_map[y_iter][x_iter],label_map[y_iter][x_iter-1],&uf_array_data);
+			} else {
+				if ( bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1] // if both have labels
+					&& bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
+					if ( label_map[y_iter][x_iter-1] == label_map[y_iter-1][x_iter] ) {
+						label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
+					} else if ( label_map[y_iter][x_iter-1] < label_map[y_iter-1][x_iter] ) {
+						label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+						uf_union(label_map[y_iter][x_iter],label_map[y_iter-1][x_iter],&uf_array_data);
+					}
+					else {
+						label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
+						uf_union(label_map[y_iter][x_iter],label_map[y_iter][x_iter-1],&uf_array_data);
+					}
+				} else if ( bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1] // if one does
+						    && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
+					label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
+				} else if ( bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1]
+						    && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
+					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
+				} else { // we are a new patch
+					label_map[y_iter][x_iter] = next_label++;
 				}
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter] ) {
-				label_map[y_iter][x_iter] = label_map[y_iter-1][x_iter];
-			} else if ( x_iter != 0 && y_iter != 0
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter][x_iter-1]
-					   && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
-				label_map[y_iter][x_iter] = next_label++; //
 			}
 		}
 	}
@@ -902,6 +910,7 @@ void connected_four(png_bytepp bitmap, const int width, const int height)
 		}
 	}
 	printf("max label after reduction: %d\n", ml_ii);
+	return label_map;
 }
 
 #if 0
@@ -925,6 +934,55 @@ void chang(png_bytepp bitmap, const int width, const int height)
 }
 #endif
 
+void dumpMap(unsigned char** map)
+{
+	TileImage_t* img;
+	img = (TileImage_t*)malloc(sizeof(TileImage_t));
+	
+	img->png = png_create_write_struct
+	(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!img->png)
+	{
+		free(img);
+		return;
+	}
+	
+	img->png_header = png_create_info_struct(img->png);
+	if (!img->png_header)
+	{
+		png_destroy_write_struct(&img->png,
+								 (png_infopp)NULL);
+		free(img);
+		return;
+	}
+	
+	img->file_ptr = fopen("map.png", "wb");
+	if (!img->file_ptr)
+	{
+		png_destroy_write_struct(&img->png,
+								 &img->png_header);
+		free(img);
+		return;
+	}
+	
+	png_init_io(img->png, img->file_ptr);
+	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+	png_write_info(img->png, img->png_header);
+	img->bitmap = map;
+
+	png_write_image(img->png, img->bitmap);
+	png_write_end(img->png, img->png_header);
+	
+	int i;
+	for (i = 0; i < Y_LEN; ++i) {
+		png_free(img->png, img->bitmap[i]);
+	}
+	png_free(img->png, img->bitmap);
+	
+	png_destroy_write_struct(&img->png, &img->png_header);
+	fclose(img->file_ptr);
+}
+
 void make_filter_image(Settings *s, TileImage_t* image)
 {
 	// Read image file
@@ -936,9 +994,9 @@ void make_filter_image(Settings *s, TileImage_t* image)
 	size_t n;
 	double** kernel = makeGaussian(10, &n);
 	applyGaussianAndThreshold(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
-	
 	// Detect ROI by 4 connected labelling
-	connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
+	unsigned char** map = connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
+	dumpMap(map);
 	
 	// Add to hash
 	/// HACK
