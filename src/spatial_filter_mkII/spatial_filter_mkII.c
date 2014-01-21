@@ -809,12 +809,14 @@ TileImage_t* readImage(const char* fn)
 typedef struct uf_array
 {
 	size_t max_uf;
+	size_t next_label;
 	int* parent;
 } uf_array_t;
 
 void init_uf_array(uf_array_t* array)
 {
 	array->max_uf = 100;
+	array->next_label = 1;
 	array->parent = calloc(array->max_uf,sizeof(int));
 }
 
@@ -844,6 +846,7 @@ int uf_find(int label, uf_array_t* uf_array_data){
 	int min = label;
 	while (uf_array_data->parent[min] != 0)
 		min = uf_array_data->parent[min];
+	
 	return min;
 }
 
@@ -852,7 +855,6 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 	// based on: https://en.wikipedia.org/w/index.php?title=Connected-component_labeling&oldid=575300229
 	// and http://www.cse.msu.edu/~stockman/Book/2002/Chapters/ch3.pdf
 	int x_iter, y_iter;
-	unsigned char next_label = 1;
 	const int BACKGROUND_COLOUR = 255;
 	unsigned char** label_map = malloc(sizeof(unsigned char*)*height);
 	uf_array_t uf_array_data;
@@ -865,13 +867,13 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 			if (bitmap[y_iter][x_iter] == BACKGROUND_COLOUR) continue;  // ignore white pixels
 			if (x_iter == 0 || y_iter == 0 ) { // special cases for edges
 				if (x_iter == 0 && y_iter == 0 ) {
-					label_map[y_iter][x_iter] = next_label++;
+					label_map[y_iter][x_iter] = uf_array_data.next_label++;
 				} else if (x_iter == 0 && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]) {
 					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
 				} else if (y_iter == 0 && bitmap[y_iter][x_iter] == bitmap[y_iter-1][x_iter]) {
 					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
 				} else {
-					label_map[y_iter][x_iter] = next_label++;
+					label_map[y_iter][x_iter] = uf_array_data.next_label++;
 				}
 			} else {
 				if ( bitmap[y_iter][x_iter] == bitmap[y_iter][x_iter-1] // if both have labels
@@ -893,13 +895,13 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 						    && bitmap[y_iter][x_iter] != bitmap[y_iter-1][x_iter] ) {
 					label_map[y_iter][x_iter] = label_map[y_iter][x_iter-1];
 				} else { // we are a new patch
-					label_map[y_iter][x_iter] = next_label++;
+					label_map[y_iter][x_iter] = uf_array_data.next_label++;
 				}
 			}
 		}
 	}
-	printf("max label before reduction: %d\n", next_label);
-	int ml_ii = 0;
+	printf("max label before reduction: %zu\n", uf_array_data.next_label);
+	size_t ml_ii = 0;
 	// second pass: replace temp labels by equiv class
 	for (y_iter = 0; y_iter < height; ++y_iter) {
 		for (x_iter = 0; x_iter < width; ++x_iter) {
@@ -909,7 +911,7 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 			ml_ii = label_map[y_iter][x_iter] > ml_ii ? label_map[y_iter][x_iter] : ml_ii;
 		}
 	}
-	printf("max label after reduction: %d\n", ml_ii);
+	printf("max label after reduction: %zu\n", ml_ii);
 	return label_map;
 }
 
