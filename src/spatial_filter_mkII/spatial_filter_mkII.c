@@ -98,7 +98,7 @@
 #include <snp.h>
 #include <parse_bam.h>
 
-#include <version.h>
+#include "shared/version.h"
 
 #define PHRED_QUAL_OFFSET  33  // phred quality values offset
 

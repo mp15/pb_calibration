@@ -96,7 +96,7 @@
 #include <parse_bam.h>
 #include <cif.h>
 
-#include <version.h>
+#include "shared/version.h"
 
 #define CT_MODE_PURITY  (1<<0)
 #define CT_MODE_QUALITY (1<<1)

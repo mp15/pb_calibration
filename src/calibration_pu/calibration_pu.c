@@ -114,7 +114,7 @@
 #include <parse_bam.h>
 #include <cif.h>
 
-#include <version.h>
+#include "shared/version.h"
 
 /* if we split data by state, using a filter file rather than tile, use tile as a place holder for state */
 #define N_STATES 2
