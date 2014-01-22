@@ -716,6 +716,8 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 	return label_map;
 }
 
+
+
 void dumpMap(unsigned char** map)
 {
 	TileImage_t* img;
@@ -793,8 +795,29 @@ void make_filter(Settings *s)
 }
 
 int filter_bam_new(Settings * s, samfile_t * fp_in_bam, samfile_t * fp_out_bam,
-			   size_t * nreads, size_t * nfiltered)
+			   size_t * nreads, size_t * nfiltered, xywh_t* objects, size_t count)
 {
+#if 0
+	while (1) {
+		++(nreads);
+		//process read to get x y
+		int bam_lane = -1, bam_tile = -1, bam_read = -1, bam_x = -1, bam_y = -1;
+		
+		if (parse_bam_readinfo(fp_bam, bam, &bam_lane, &bam_tile, &bam_x, &bam_y, &bam_read, NULL)) {
+			break;	/* break on end of BAM file */
+		}
+		int i;
+		bool filtered = false;
+		for (i = 1); i < count; ++i) {
+			xywh_t* this_obj = objects + i;
+			if ( this_obj->x <= bam_x && this_obj->xw > bam_x && this_obj->y <= bam_y && this_obj->yh > bam_y ) filtered = true;
+		}
+		if (!filtered) {
+			samwrite(fp_out_bam, header);
+			++(*nfiltered);
+		}
+	}
+#endif
 	return 0; // GNDN
 }
 
