@@ -604,6 +604,13 @@ int uf_find(int label, uf_array_t* uf_array_data){
 	return uf_find_inner(label, uf_array_data);
 }
 
+typedef struct xywh {
+	int x; // leftmost coord
+	int y; // uppermost coord
+	int xw; // x+width
+	int yh; // y+height
+} xywh_t;
+
 /*
  * @returns int[height][width] array of labels corresponding to bitmap
  */
@@ -669,6 +676,43 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 		}
 	}
 	printf("max label after reduction: %zu\n", ml_ii);
+	int loop_iter;
+	int count = 0;
+	int* transform_parent = malloc(sizeof(int)*ml_ii);
+	for ( loop_iter = 0; loop_iter < ml_ii; ++loop_iter ) { if (uf_array_data.parent[loop_iter] == 0) {  transform_parent[loop_iter] = count++; } }
+
+	printf("max label after 2x reduction will be: %u\n", count);
+	
+	xywh_t* objects = (xywh_t*)malloc(sizeof(xywh_t) * count);
+	int object_iter;
+	// init the structs
+	for (object_iter = 0; object_iter < count; ++object_iter) {
+		xywh_t* this_obj = objects + object_iter;
+		this_obj->x = width-1;
+		this_obj->y = height-1;
+		this_obj->xw = 0;
+		this_obj->yh = 0;
+	}
+	// third pass: reduce labels this should probably be folded into 2nd pass
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		for (x_iter = 0; x_iter < width; ++x_iter) {
+			int label = transform_parent[label_map[y_iter][x_iter]];
+			xywh_t* this_obj = objects + label;
+			if ( this_obj->x > x_iter ) this_obj->x = x_iter;
+			if ( this_obj->y > y_iter ) this_obj->y = y_iter;
+			if ( this_obj->xw < x_iter ) this_obj->xw = x_iter;
+			if ( this_obj->yh < y_iter ) this_obj->yh = y_iter;
+		}
+	}
+	
+	int print_obj_iter;
+	printf("dumping object list:\n");
+	for (print_obj_iter = 0; print_obj_iter < count; ++print_obj_iter)
+	{
+		xywh_t* this_obj = objects + print_obj_iter;
+		printf("%d: (%d,%d)-(%d,%d)\n",print_obj_iter, this_obj->x, this_obj->y, this_obj->xw, this_obj->yh );
+	}
+
 	return label_map;
 }
 
