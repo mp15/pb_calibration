@@ -105,14 +105,14 @@ typedef struct {
 	char *snp_file;
 	char *in_bam_file;
 	HashTable *snp_hash;
-	HashTable *tile_hash;
     int *tileArray;
 	char *working_dir;
 	char *output;
 	int read_length[N_READS];
 	int dump;
-	int calculate;
-	int apply;
+	bool calculate_i;
+	bool calculate_ii;
+	bool apply;
 	int qcfail;
 	int quiet;
 	int region_size;
@@ -120,10 +120,6 @@ typedef struct {
 	int nregions_y;
 	int nregions;
 	int compress;
-	int region_min_count;
-	float region_mismatch_threshold;
-	float region_insertion_threshold;
-	float region_deletion_threshold;
 } Settings;
 
 
@@ -291,7 +287,7 @@ static TileImage_t* create_gray_image(TileImage_t* existing, const char* prefix,
 	return img;
 }
 
-static void writeCloseImage(TileImage_t* img)
+static void write_close_image(TileImage_t* img)
 {
 	png_write_image(img->png, img->bitmap);
 	png_write_end(img->png, img->png_header);
@@ -419,8 +415,8 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
     for(isurface=0;isurface<N_SURFACES; ++isurface) {
 		for(iread=0; iread<(N_READS-1); ++iread) {
 			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
-				writeCloseImage(&tile_img_mismatch[isurface][iread][icycle]);
-				writeCloseImage(&tile_img_indel[isurface][iread][icycle]);
+				write_close_image(&tile_img_mismatch[isurface][iread][icycle]);
+				write_close_image(&tile_img_indel[isurface][iread][icycle]);
 			}
 		}
 	}
@@ -783,41 +779,86 @@ static void make_filter_image(Settings *s, TileImage_t* image)
 	
 	// Add to hash
 	/// HACK
-	writeCloseImage(outimg);
+	write_close_image(outimg);
 }
 
 static void make_filter(Settings *s)
 {
-	TileImage_t* image = read_png_image("arun2_mm_1_1_99.png");
-	make_filter_image(s, image);
-	
+	fprintf(stderr, "entering filter loop\n");
+	int isurface;
+    for(isurface=0;isurface < N_SURFACES; ++isurface) {
+		int iread;
+		fprintf(stderr, "entering filter loop surface %d\n", isurface);
+		for(iread=0; iread < (N_READS-1); ++iread) {
+			int icycle;
+			fprintf(stderr, "entering filter loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
+			s->read_length[iread] = 100; // HACK!
+			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
+				char* buf_mm = NULL;
+				char* buf_id = NULL;
+				asprintf(&buf_mm, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
+				asprintf(&buf_id, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
+				TileImage_t* image_mm = read_png_image(buf_mm);
+				TileImage_t* image_id = read_png_image(buf_id);
+				make_filter_image(s, image_mm);
+				make_filter_image(s, image_id);
+			}
+		}
+	}
 }
 
-static int filter_bam_new(Settings * s, samfile_t * fp_in_bam, samfile_t * fp_out_bam,
-			   size_t * nreads, size_t * nfiltered, xywh_t* objects, size_t count)
+static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
+			   size_t * nreads, size_t * nfiltered, const xywh_t* objects, const size_t count)
 {
-#if 0
+	bam1_t* bam = bam_init1();
 	while (1) {
-		++(nreads);
+		++(*nreads);
 		//process read to get x y
 		int bam_lane = -1, bam_tile = -1, bam_read = -1, bam_x = -1, bam_y = -1;
 		
-		if (parse_bam_readinfo(fp_bam, bam, &bam_lane, &bam_tile, &bam_x, &bam_y, &bam_read, NULL)) {
+		if (parse_bam_readinfo(fp_in_bam, bam, &bam_lane, &bam_tile, &bam_x, &bam_y, &bam_read, NULL)) {
 			break;	/* break on end of BAM file */
 		}
 		int i;
 		bool filtered = false;
-		for (i = 1); i < count; ++i) {
-			xywh_t* this_obj = objects + i;
+		for (i = 1; i < count; ++i) {
+			const xywh_t* this_obj = objects + i;
 			if ( this_obj->x <= bam_x && this_obj->xw > bam_x && this_obj->y <= bam_y && this_obj->yh > bam_y ) filtered = true;
 		}
 		if (!filtered) {
-			samwrite(fp_out_bam, header);
+			if (0 > samwrite(fp_out_bam, bam)) die("Error: writing bam file\n");
 			++(*nfiltered);
 		}
 	}
-#endif
-	return 0; // GNDN
+	bam_destroy1(bam);
+
+	return 0;
+}
+
+
+static int filter_bam(const Settings * s)
+{
+	samfile_t * fp_in_bam = NULL;
+	samfile_t * fp_out_bam = NULL;
+
+	fp_in_bam = samopen(s->in_bam_file, "rb", 0);
+	if (NULL == fp_in_bam) {
+		die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
+	}
+
+	fp_out_bam = samopen(s->output, "wb", 0);
+	if (NULL == fp_out_bam) {
+		die("ERROR: can't open bam file %s: %s\n", s->output, strerror(errno));
+	}
+
+	size_t n_reads = 0;
+	size_t n_filtered = 0;
+	
+	xywh_t* objects = NULL;
+	size_t count = 0;
+	
+	if (0 != filter_bam_inner(fp_in_bam, fp_out_bam, &n_reads, &n_filtered, objects,  count )) return 1;
+	return 0;
 }
 
 
@@ -826,9 +867,9 @@ static void usage(int code)
 {
 	FILE *usagefp = stderr;
 
-	fprintf(usagefp, "spatial_filter %s\n\n", version);
+	fprintf(usagefp, "spatial_filter_mkII %s\n\n", version);
 	fprintf(usagefp,
-		"Usage: spatial_filter [command] [options] bam_file\n"
+		"Usage: spatial_filter_mkII [command] [options] bam_file\n"
 		"" "  calculate or apply a spatial filter\n" "");
 	fprintf(usagefp, "  command must be one of:\n");
 	fprintf(usagefp, "    -d         just dump bam file in 'mismatch' format\n");
@@ -855,20 +896,6 @@ static void usage(int code)
 	fprintf(usagefp, "      -s --snp_file file\n");
 	fprintf(usagefp, "                 set of snps to be removed\n");
 	fprintf(usagefp, "                 file in Reference Ordered Data (ROD) format\n");
-	fprintf(usagefp, "      --region_size\n");
-	fprintf(usagefp, "                 default %d\n", REGION_SIZE);
-	fprintf(usagefp, "      --region_min_count\n");
-	fprintf(usagefp, "                 minimum coverage when setting region state\n");
-	fprintf(usagefp, "                 default %d\n", REGION_MIN_COUNT);
-	fprintf(usagefp, "      --region_mismatch_threshold\n");
-	fprintf(usagefp, "                 threshold for setting region mismatch state\n");
-	fprintf(usagefp, "                 default %-6.4f\n", REGION_MISMATCH_THRESHOLD);
-	fprintf(usagefp, "      --region_insertion_threshold\n");
-	fprintf(usagefp, "                 threshold for setting region insertion state\n");
-	fprintf(usagefp, "                 default %-6.4f\n", REGION_INSERTION_THRESHOLD);
-	fprintf(usagefp, "      --region_deletion_threshold\n");
-	fprintf(usagefp, "                 threshold for setting region deletion state\n");
-	fprintf(usagefp, "                 default %-6.4f\n", REGION_DELETION_THRESHOLD);
 	fprintf(usagefp, "\n");
 	fprintf(usagefp, "    apply filter:\n");
 	fprintf(usagefp, "      -o         output\n");
@@ -921,12 +948,12 @@ int main(int argc, char **argv)
 	settings.filter = NULL;
 	settings.quiet = 0;
 	settings.dump = 0;
-	settings.calculate = 0;
-	settings.apply = 0;
+	settings.calculate_i = false;
+	settings.calculate_ii = false;
+	settings.apply = false;
 	settings.qcfail = 0;
 	settings.snp_file = NULL;
 	settings.snp_hash = NULL;
-	settings.tile_hash = NULL;
 	settings.tileArray = NULL;
 	settings.output = NULL;
 	settings.in_bam_file = NULL;
@@ -939,46 +966,31 @@ int main(int argc, char **argv)
 	settings.nregions_y = 0;
 	settings.nregions = 0;
 	settings.compress = 1;
-	settings.region_min_count = REGION_MIN_COUNT;
-	settings.region_mismatch_threshold = REGION_MISMATCH_THRESHOLD;
-	settings.region_insertion_threshold = REGION_INSERTION_THRESHOLD;
-	settings.region_deletion_threshold = REGION_DELETION_THRESHOLD;
 
 	static struct option long_options[] = {
                    {"snp_file", 1, 0, 's'},
-                   {"snp-file", 1, 0, 's'},
                    {"help", 0, 0, 'h'},
                    {"filter", 1, 0, 'F'},
                    {"version", 0, 0, 'v'},
-                   {"region_min_count", 1, 0, 'm'},
-                   {"region-size", 1, 0, 'r'},
-                   {"region_size", 1, 0, 'r'},
-                   {"region_mismatch_threshold", 1, 0, 'z'},
-                   {"region_insertion_threshold", 1, 0, 'b'},
-                   {"region_deletion_threshold", 1, 0, 'e'},
                    {0, 0, 0, 0}
                };
 
 	int ncmd = 0;
 	char c;
-	while ( (c = getopt_long(argc, argv, "vdcafuDF:b:e:o:i:m:p:s:r:x:y:t:z:qh?", long_options, 0)) != -1) {
+	while ( (c = getopt_long(argc, argv, "vdcCafuDF:o:i:p:s:x:y:t:qh?", long_options, 0)) != -1) {
 		switch (c) {
 			case 'v':	display("spatial_filter: Version %s\n", version); 
 						exit(0);
-                        case 'd':	settings.dump = 1; ncmd++; break;
+			case 'd':	settings.dump = 1; ncmd++; break;
 			case 'D':	dumpFilter = 1; ncmd++; break;
-			case 'c':	settings.calculate = 1; ncmd++; break;
-			case 'a':	settings.apply = 1; ncmd++; break;
+			case 'c':	settings.calculate_i = true; ncmd++; break;
+			case 'C':	settings.calculate_ii = true; ncmd++; break;
+			case 'a':	settings.apply = true; ncmd++; break;
 			case 'f':	settings.qcfail = 1;		break;
 			case 'u':	settings.compress = 0;		break;
 			case 'o':	settings.output = optarg;	break;
 			case 's':	settings.snp_file = optarg;	break;
 			case 'F':	settings.filter = optarg;	break;
-			case 'r':	settings.region_size = atoi(optarg); break;
-			case 'm':	settings.region_min_count = atoi(optarg); break;
-			case 'z':	settings.region_mismatch_threshold = atof(optarg); break;
-			case 'b':	settings.region_insertion_threshold = atof(optarg); break;
-			case 'e':	settings.region_deletion_threshold = atof(optarg); break;
 			case 'q':	settings.quiet = 1;			break;
 			case 'h':
 			case '?':	usage(0);					break;
@@ -989,58 +1001,23 @@ int main(int argc, char **argv)
 	}
 
 	if (ncmd > 1) {
-	        display("ERROR: More than one command specified\n", c);
+		display("ERROR: More than one command specified\n", c);
 		usage(1);
-        }
+	}
 
 	if (optind < argc) settings.in_bam_file = argv[optind];
 
 	if (!settings.in_bam_file && !dumpFilter) die("Error: no BAM file specified\n");
 
-        if (!settings.filter && (dumpFilter || settings.apply)) die("Error: no filter file specified\n");
-
-	if (settings.calculate) {
-   	    if (settings.region_size < 1) die("Error: invalid region size");
-
-	    if (settings.region_min_count < 1) die("Error: invalid region_min_count");
-
-#if 0 // this code will reset region_min_count so that at least 2 reads are required to pass any threshold
-            int region_min_count = settings.region_min_count;
-
-	    if ((region_min_count * settings.region_mismatch_threshold) < 1.0 ) {
-                region_min_count = ceil(1.0 / settings.region_mismatch_threshold);
-                display("Resetting region_min_count to %d\n", region_min_count);
-            }
-	    if ((region_min_count * settings.region_insertion_threshold) < 1.0 ) {
-                region_min_count = ceil(1.0 / settings.region_insertion_threshold);
-                display("Resetting region_min_count to %d\n", region_min_count);
-            }
-	    if ((region_min_count * settings.region_deletion_threshold) < 1.0 ) {
-                region_min_count = ceil(1.0 / settings.region_deletion_threshold);
-                display("Resetting region_min_count to %d\n", region_min_count);
-            }
-            settings.region_min_count = region_min_count;
-#endif            
-        }
+	if (!settings.filter && (dumpFilter || settings.apply)) die("Error: no filter file specified\n");
 
 	// create pseudo command line
-	if (settings.calculate) {
-		char arg[64];
+	if (settings.calculate_i) {
 		cmd = smalloc(2048);
 		strcat(cmd, argv[0]);
 		strcat(cmd, " -c ");
 		if (settings.snp_file)                   { strcat(cmd, " -s "); strcat(cmd, settings.snp_file); }
 		if (settings.filter)                     { strcat(cmd, " -F "); strcat(cmd, settings.filter); }
-		if (settings.region_size)                { snprintf(arg, 64, " --region_size %d", settings.region_size);
-                                                           strcat(cmd, arg); }
-		if (settings.region_min_count)           { snprintf(arg, 64, " --region_min_count %d", settings.region_min_count);
-                                                           strcat(cmd, arg); }
-		if (settings.region_mismatch_threshold)  { snprintf(arg, 64, " --region_mismatch_threshold %-6.4f", settings.region_mismatch_threshold);
-                                                           strcat(cmd, arg); }
-		if (settings.region_insertion_threshold) { snprintf(arg, 64, " --region_insertion_threshold %-6.4f", settings.region_insertion_threshold);
-                                                           strcat(cmd, arg); }
-		if (settings.region_deletion_threshold)  { snprintf(arg, 64, " --region_deletion_threshold %-6.4f", settings.region_deletion_threshold);
-                                                           strcat(cmd, arg); }
 		strcat(cmd, " ");
 		strcat(cmd, settings.in_bam_file);
 		if (strlen(cmd) > 2047) die("Command line too big");
@@ -1067,13 +1044,9 @@ int main(int argc, char **argv)
 		die("ERROR: can't obtain working directory: %s\n", strerror(errno));
 	}
 	
-	/// HACK TEST
-	make_filter(&settings);
-	///
-	
 
 	/* calculate the filter */
-    if (settings.calculate) {
+    if (settings.calculate_i) {
         /* read the snp_file */
         if (NULL != settings.snp_file) {
             settings.snp_hash = readSnpFile(settings.snp_file);
@@ -1084,6 +1057,12 @@ int main(int argc, char **argv)
 
         calculate_filter(&settings);
     }
+	if (settings.calculate_ii) {
+		make_filter(&settings);
+	}
+	if (settings.apply) {
+		filter_bam(&settings);
+	}
 
 	if (NULL != settings.working_dir) free(settings.working_dir);
 
