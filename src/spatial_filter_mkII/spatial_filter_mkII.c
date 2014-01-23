@@ -306,7 +306,7 @@ static void writeCloseImage(TileImage_t* img)
 	fclose(img->file_ptr);
 }
 
-static bool updateSurfaceCycleImage(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
+static bool update_surface_cycle_image(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
 	int cycle;
 	y /= 10;
 	x /= 10;
@@ -321,7 +321,7 @@ static bool updateSurfaceCycleImage(Settings *s, TileImage_t** row_mismatch_imag
 }
 
 /*
- * Takes the bam file as input and updates the region table
+ * Takes the bam file as input and creates images representing the tiles
  *
  * Assumption: within a single input file, all reads are the same length and
  * we're using unclipped data.
@@ -331,7 +331,7 @@ static bool updateSurfaceCycleImage(Settings *s, TileImage_t** row_mismatch_imag
  */
 static const int N_SURFACES = 2;
 
-void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)], TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)], int *ntiles, size_t * nreads)
+static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)], TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)], int *ntiles, size_t * nreads)
 {
 	int lane = -1;
 
@@ -408,7 +408,7 @@ void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismat
 			die("Error: Inconsistent lane within bam file.\nHave %d, previously it was %d.\n", bam_lane, lane);
 		}
 
-		if (!updateSurfaceCycleImage(s, tile_img_mismatch[surface], tile_img_indel[surface], (bam_read-1), bam_x, bam_y, bam_read_mismatch)) {
+		if (!update_surface_cycle_image(s, tile_img_mismatch[surface], tile_img_indel[surface], (bam_read-1), bam_x, bam_y, bam_read_mismatch)) {
 			die("ERROR: updating image values for surface %i.\n", surface);
 		}
 		nreads_bam++;
@@ -429,7 +429,7 @@ void makeTileImages(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismat
 }
 
 #define PRECISION 0.6
-double** makeGaussian(double sigma, size_t * n_out)
+static double** make_gaussian(double sigma, size_t * n_out)
 {
 	size_t n = ceil(sigma*sqrt(-2.0*log(PRECISION)))+1.0; // determine size based on sigma
 	size_t array_size = (n*2 + 1);
@@ -465,7 +465,7 @@ double** makeGaussian(double sigma, size_t * n_out)
 
 #define THRESHOLD 245.0
 
-void applyGaussianAndThreshold(png_bytepp row_p, png_bytepp output_rows, const int width, const int height, double** kernel, const size_t n)
+static void apply_gaussian_and_threshold(png_bytepp row_p, png_bytepp output_rows, const int width, const int height, double** kernel, const size_t n)
 {
 	int x_iter, y_iter;
 	for (y_iter = 0; y_iter < height; ++y_iter) {
@@ -504,7 +504,7 @@ typedef struct roi {
 	int height;
 } roi_t;
 
-TileImage_t* readImage(const char* fn)
+static TileImage_t* read_png_image(const char* fn)
 {
 	TileImage_t* retval = malloc(sizeof(TileImage_t));
 	retval->file_ptr = fopen(fn, "rb");
@@ -559,7 +559,7 @@ typedef struct uf_array
 	int* parent;
 } uf_array_t;
 
-void init_uf_array(uf_array_t* array)
+static void init_uf_array(uf_array_t* array)
 {
 	array->max_uf = 100;
 	array->next_label = 1;
@@ -568,7 +568,7 @@ void init_uf_array(uf_array_t* array)
 
 static const int UF_INCREMENT = 100;
 
-void uf_union(int parent, int child, uf_array_t* uf_array_data)
+static void uf_union(int parent, int child, uf_array_t* uf_array_data)
 {
 	if (child >= uf_array_data->max_uf) { // if we're bigger than existing array make it bigger
 		int from = uf_array_data->max_uf;
@@ -614,7 +614,7 @@ typedef struct xywh {
 /*
  * @returns int[height][width] array of labels corresponding to bitmap
  */
-unsigned char** connected_four(png_bytepp bitmap, const int width, const int height)
+static unsigned char** connected_four(png_bytepp bitmap, const int width, const int height)
 {
 	// based on: https://en.wikipedia.org/w/index.php?title=Connected-component_labeling&oldid=575300229
 	// and http://www.cse.msu.edu/~stockman/Book/2002/Chapters/ch3.pdf
@@ -717,8 +717,7 @@ unsigned char** connected_four(png_bytepp bitmap, const int width, const int hei
 }
 
 
-
-void dumpMap(unsigned char** map)
+static void dumpMap(unsigned char** map)
 {
 	TileImage_t* img;
 	img = (TileImage_t*)malloc(sizeof(TileImage_t));
@@ -767,7 +766,7 @@ void dumpMap(unsigned char** map)
 	fclose(img->file_ptr);
 }
 
-void make_filter_image(Settings *s, TileImage_t* image)
+static void make_filter_image(Settings *s, TileImage_t* image)
 {
 	// Read image file
 	// Convert to grayscale
@@ -776,8 +775,8 @@ void make_filter_image(Settings *s, TileImage_t* image)
 	// Threshold back to binary
 	TileImage_t* outimg = create_gray_image(NULL, "hack", "filter", 1, 1, 99);
 	size_t n;
-	double** kernel = makeGaussian(10, &n);
-	applyGaussianAndThreshold(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
+	double** kernel = make_gaussian(10, &n);
+	apply_gaussian_and_threshold(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
 	// Detect ROI by 4 connected labelling
 	unsigned char** map = connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
 	dumpMap(map);
@@ -787,14 +786,14 @@ void make_filter_image(Settings *s, TileImage_t* image)
 	writeCloseImage(outimg);
 }
 
-void make_filter(Settings *s)
+static void make_filter(Settings *s)
 {
-	TileImage_t* image = readImage("arun2_mm_1_1_99.png");
+	TileImage_t* image = read_png_image("arun2_mm_1_1_99.png");
 	make_filter_image(s, image);
 	
 }
 
-int filter_bam_new(Settings * s, samfile_t * fp_in_bam, samfile_t * fp_out_bam,
+static int filter_bam_new(Settings * s, samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 			   size_t * nreads, size_t * nfiltered, xywh_t* objects, size_t count)
 {
 #if 0
@@ -885,7 +884,10 @@ static void usage(int code)
 }
 
 
-void calculateFilter(Settings *s)
+/*
+ * Make the filter
+ */
+static void calculate_filter(Settings *s)
 {
 	samfile_t *fp_input_bam;
 	int ntiles = 0;
@@ -895,48 +897,18 @@ void calculateFilter(Settings *s)
 	TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)];
 	TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)];
 
-    if( NULL == s->filter) {
-        display("Writing filter to stdout\n");
-        s->filter = "/dev/stdout";
-    }
-
 	fp_input_bam = samopen(s->in_bam_file, "rb", 0);
 	if (NULL == fp_input_bam) {
 		die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
 	}
 
-	makeTileImages(s, fp_input_bam, tile_img_mismatch, tile_img_indel, &ntiles, &nreads);
+	make_tile_images(s, fp_input_bam, tile_img_mismatch, tile_img_indel, &ntiles, &nreads);
 
 	/* close the bam file */
 	samclose(fp_input_bam);
 
-	if (!s->quiet) {
-		display("Processed %8lu traces\n", nreads);
-		if (NULL != s->snp_hash) {
-			size_t nsnps = 0;
-			int ibucket;
-			for (ibucket = 0; ibucket < s->snp_hash->nbuckets; ibucket++) {
-				HashItem *hi;
-				for (hi = s->snp_hash->bucket[ibucket]; hi; hi = hi->next)
-					if (hi->data.i) nsnps += hi->data.i;
-			}
-			display("Ignored %lu snps\n", nsnps);
-		}
-	}
-
 	/* back to where we belong */
 	checked_chdir(s->working_dir);
-
-	//findBadRegions(s, ntiles, rts_hash);
-
-    if( NULL == s->filter) {
-        display("Writing filter to stdout\n");
-        s->filter = "/dev/stdout";
-    }
-
-	//printFilter(s, ntiles, rts_hash);
-
-	//freeRTS(s, rts_hash);
 }
 
 
@@ -1110,7 +1082,7 @@ int main(int argc, char **argv)
             }
         }
 
-        calculateFilter(&settings);
+        calculate_filter(&settings);
     }
 
 	if (NULL != settings.working_dir) free(settings.working_dir);
