@@ -129,6 +129,7 @@ AC_DEFUN([AX_LIB_SAMTOOLS],
       fi
 
       SAMTOOLS_VERSION=`$samtools_exe 2>&1 | sed -n 's/Version: *\(.*\)/\1/p'`
+      AC_MSG_CHECKING([samtools_version ($SAMTOOLS_VERSION)])
 
       v1=`expr "$1" : '\([[0-9]]*\)'`
       v2=`expr "$1" : '[[0-9]]*\.\([[0-9]]*\)'`
