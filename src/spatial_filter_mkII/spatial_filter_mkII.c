@@ -607,10 +607,23 @@ typedef struct xywh {
 	int yh; // y+height
 } xywh_t;
 
+typedef struct xywh_cont {
+	size_t n;
+	xywh_t* objs;
+} xywh_cont_t;
+
+xywh_cont_t* xywh_cont_init(size_t count)
+{
+	xywh_cont_t* retval = (xywh_cont_t*)malloc(sizeof(xywh_cont_t));
+	retval->n = count;
+	retval->objs = (xywh_t*)malloc(sizeof(xywh_t) * count);
+	return retval;
+}
+
 /*
  * @returns int[height][width] array of labels corresponding to bitmap
  */
-static unsigned char** connected_four(png_bytepp bitmap, const int width, const int height)
+static xywh_cont_t* connected_four(png_bytepp bitmap, const int width, const int height)
 {
 	// based on: https://en.wikipedia.org/w/index.php?title=Connected-component_labeling&oldid=575300229
 	// and http://www.cse.msu.edu/~stockman/Book/2002/Chapters/ch3.pdf
@@ -660,7 +673,7 @@ static unsigned char** connected_four(png_bytepp bitmap, const int width, const 
 			}
 		}
 	}
-	printf("max label before reduction: %zu\n", uf_array_data.next_label);
+
 	size_t ml_ii = 0;
 	// second pass: replace temp labels by equiv class
 	for (y_iter = 0; y_iter < height; ++y_iter) {
@@ -671,19 +684,17 @@ static unsigned char** connected_four(png_bytepp bitmap, const int width, const 
 			ml_ii = label_map[y_iter][x_iter] > ml_ii ? label_map[y_iter][x_iter] : ml_ii;
 		}
 	}
-	printf("max label after reduction: %zu\n", ml_ii);
+
 	int loop_iter;
 	int count = 0;
 	int* transform_parent = malloc(sizeof(int)*ml_ii);
 	for ( loop_iter = 0; loop_iter < ml_ii; ++loop_iter ) { if (uf_array_data.parent[loop_iter] == 0) {  transform_parent[loop_iter] = count++; } }
-
-	printf("max label after 2x reduction will be: %u\n", count);
 	
-	xywh_t* objects = (xywh_t*)malloc(sizeof(xywh_t) * count);
+	xywh_cont_t* objects = xywh_cont_init(count);
 	int object_iter;
 	// init the structs
 	for (object_iter = 0; object_iter < count; ++object_iter) {
-		xywh_t* this_obj = objects + object_iter;
+		xywh_t* this_obj = objects->objs + object_iter;
 		this_obj->x = width-1;
 		this_obj->y = height-1;
 		this_obj->xw = 0;
@@ -693,26 +704,31 @@ static unsigned char** connected_four(png_bytepp bitmap, const int width, const 
 	for (y_iter = 0; y_iter < height; ++y_iter) {
 		for (x_iter = 0; x_iter < width; ++x_iter) {
 			int label = transform_parent[label_map[y_iter][x_iter]];
-			xywh_t* this_obj = objects + label;
+			xywh_t* this_obj = objects->objs + label;
 			if ( this_obj->x > x_iter ) this_obj->x = x_iter;
 			if ( this_obj->y > y_iter ) this_obj->y = y_iter;
 			if ( this_obj->xw < x_iter ) this_obj->xw = x_iter;
 			if ( this_obj->yh < y_iter ) this_obj->yh = y_iter;
 		}
 	}
-	
+	// done with this
+	for (y_iter = 0; y_iter < height; ++y_iter) {
+		free(label_map[y_iter]);
+	}
+	free(label_map);
+// TRACE
 	int print_obj_iter;
 	printf("dumping object list:\n");
 	for (print_obj_iter = 0; print_obj_iter < count; ++print_obj_iter)
 	{
-		xywh_t* this_obj = objects + print_obj_iter;
+		xywh_t* this_obj = objects->objs + print_obj_iter;
 		printf("%d: (%d,%d)-(%d,%d)\n",print_obj_iter, this_obj->x, this_obj->y, this_obj->xw, this_obj->yh );
 	}
 
-	return label_map;
+	return objects;
 }
 
-
+#ifdef DUMPMAP
 static void dumpMap(unsigned char** map)
 {
 	TileImage_t* img;
@@ -761,30 +777,39 @@ static void dumpMap(unsigned char** map)
 	png_destroy_write_struct(&img->png, &img->png_header);
 	fclose(img->file_ptr);
 }
+#endif
 
-static void make_filter_image(Settings *s, TileImage_t* image)
+// Read image file is in variable "image"
+static xywh_cont_t* make_filter_image(Settings *s, TileImage_t* image, int surface, int read, int cycle)
 {
-	// Read image file
-	// Convert to grayscale
-	
-	// Gaussian convolution 10 pixel radius sigma
-	// Threshold back to binary
-	TileImage_t* outimg = create_gray_image(NULL, "hack", "filter", 1, 1, 99);
+	// TODO: Consider making this not write images to disk
+
+	// create greyscale image for gaussian
+	TileImage_t* outimg = create_gray_image(NULL, s->output, "filter", surface, read, cycle);
 	size_t n;
+
+	// Create gaussian kernel matrix (10 pixel radius sigma)
 	double** kernel = make_gaussian(10, &n);
+	// Perform gaussian convolution and then threshold back to binary
 	apply_gaussian_and_threshold(image->bitmap, outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header), kernel, n);
+
 	// Detect ROI by 4 connected labelling
-	unsigned char** map = connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
-	dumpMap(map);
-	
-	// Add to hash
-	/// HACK
+	xywh_cont_t* objs = connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
 	write_close_image(outimg);
+	return objs;
 }
 
+/*
+ * Read in raw mismatch indel and SNP images
+ * Transform them to yield object locators
+ * pivot object locs to key surface-read tests with value cycle and type (SNP/INDEL) for easy processing
+ */
 static void make_filter(Settings *s)
 {
 	fprintf(stderr, "entering filter loop\n");
+	xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100];
+	xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100];
+
 	int isurface;
     for(isurface=0;isurface < N_SURFACES; ++isurface) {
 		int iread;
@@ -800,8 +825,8 @@ static void make_filter(Settings *s)
 				asprintf(&buf_id, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
 				TileImage_t* image_mm = read_png_image(buf_mm);
 				TileImage_t* image_id = read_png_image(buf_id);
-				make_filter_image(s, image_mm);
-				make_filter_image(s, image_id);
+				obj_mm[isurface][iread][icycle] = make_filter_image(s, image_mm, isurface, iread, icycle);
+				obj_id[isurface][iread][icycle] = make_filter_image(s, image_id, isurface, iread, icycle);
 			}
 		}
 	}
