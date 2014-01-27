@@ -164,6 +164,7 @@ static TileImage_t* create_image(TileImage_t* existing, const char* prefix, cons
 	if (!img->png)
 	{
 		if (!existing) free(img);
+		fprintf(stderr, "create_image: cannot allocate png write struct\n");
 		return NULL;
 	}
 	
@@ -173,6 +174,7 @@ static TileImage_t* create_image(TileImage_t* existing, const char* prefix, cons
 		png_destroy_write_struct(&img->png,
 								 (png_infopp)NULL);
 		if (!existing) free(img);
+		fprintf(stderr, "create_image: cannot allocate png info struct\n");
 		return NULL;
 	}
 
@@ -182,12 +184,12 @@ static TileImage_t* create_image(TileImage_t* existing, const char* prefix, cons
 		png_destroy_write_struct(&img->png,
 								 &img->png_header);
 		if (!existing) free(img);
+		fprintf(stderr, "create_image: cannot open file to write to\n");
+		perror("");
 		return NULL;
 	}
 
-	png_init_io(img->png, img->file_ptr);
 	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 1, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-	png_write_info(img->png, img->png_header);
 	img->bitmap = (png_bytepp)png_malloc(img->png, Y_LEN * sizeof(png_bytep));
 
 	if (!img->bitmap)
@@ -196,6 +198,7 @@ static TileImage_t* create_image(TileImage_t* existing, const char* prefix, cons
 								 &img->png_header);
 		fclose(img->file_ptr);
 		if (!existing) free(img);
+		fprintf(stderr, "create_image: Cannot allocate memory for bitmap y.\n");
 		return NULL;
 	}
 	
@@ -209,6 +212,7 @@ static TileImage_t* create_image(TileImage_t* existing, const char* prefix, cons
 			fclose(img->file_ptr);
 			free(img->bitmap);
 			if (!existing) free(img);
+			fprintf(stderr, "create_image: Cannot allocate memory for bitmap x.\n");
 			return NULL;
 		}
 		memset(img->bitmap[i], 0, png_get_rowbytes(img->png,img->png_header));
@@ -256,9 +260,7 @@ static TileImage_t* create_gray_image(TileImage_t* existing, const char* prefix,
 		return NULL;
 	}
 	
-	png_init_io(img->png, img->file_ptr);
 	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-	png_write_info(img->png, img->png_header);
 	img->bitmap = (png_bytepp)png_malloc(img->png, Y_LEN * sizeof(png_bytep));
 	
 	if (!img->bitmap)
@@ -289,6 +291,8 @@ static TileImage_t* create_gray_image(TileImage_t* existing, const char* prefix,
 
 static void write_close_image(TileImage_t* img)
 {
+	png_init_io(img->png, img->file_ptr);
+	png_write_info(img->png, img->png_header);
 	png_write_image(img->png, img->bitmap);
 	png_write_end(img->png, img->png_header);
 	
@@ -301,6 +305,19 @@ static void write_close_image(TileImage_t* img)
 	png_destroy_write_struct(&img->png, &img->png_header);
 	fclose(img->file_ptr);
 }
+
+static void nowrite_close_image(TileImage_t* img)
+{
+	int i;
+	for (i = 0; i < Y_LEN; ++i) {
+		png_free(img->png, img->bitmap[i]);
+	}
+	png_free(img->png, img->bitmap);
+	
+	png_destroy_write_struct(&img->png, &img->png_header);
+	fclose(img->file_ptr);
+}
+
 
 static bool update_surface_cycle_image(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
 	int cycle;
@@ -795,7 +812,8 @@ static xywh_cont_t* make_filter_image(Settings *s, TileImage_t* image, int surfa
 
 	// Detect ROI by 4 connected labelling
 	xywh_cont_t* objs = connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
-	write_close_image(outimg);
+	//write_close_image(outimg);
+	nowrite_close_image(outimg);
 	return objs;
 }
 
@@ -822,7 +840,7 @@ static void make_filter(Settings *s)
 				char* buf_mm = NULL;
 				char* buf_id = NULL;
 				asprintf(&buf_mm, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
-				asprintf(&buf_id, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
+				asprintf(&buf_id, "%s_id_%d_%d_%d.png",s->output, isurface, iread, icycle);
 				TileImage_t* image_mm = read_png_image(buf_mm);
 				TileImage_t* image_id = read_png_image(buf_id);
 				obj_mm[isurface][iread][icycle] = make_filter_image(s, image_mm, isurface, iread, icycle);
