@@ -64,6 +64,9 @@
 #include <getopt.h>
 #include <png.h>
 
+#include <rTreeIndex.h>
+
+
 /* To turn off assert for a small speed gain, uncomment this line */
 /* #define NDEBUG */
 
@@ -105,7 +108,6 @@ typedef struct {
 	char *snp_file;
 	char *in_bam_file;
 	HashTable *snp_hash;
-    int *tileArray;
 	char *working_dir;
 	char *output;
 	int read_length[N_READS];
@@ -115,10 +117,9 @@ typedef struct {
 	bool apply;
 	int qcfail;
 	int quiet;
-	int region_size;
-	int nregions_x;
-	int nregions_y;
-	int nregions;
+	int surface;
+	int read;
+	int cycle;
 	int compress;
 } Settings;
 
@@ -357,10 +358,10 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 
 	bam1_t *bam = bam_init1();
 
-    int isurface, iread, icycle;
+	int isurface, iread, icycle;
 	
 	fprintf(stderr, "entering image init loop\n");
-    for(isurface=0;isurface < N_SURFACES; ++isurface) {
+	for(isurface=0;isurface < N_SURFACES; ++isurface) {
 		fprintf(stderr, "entering image init loop surface %d\n", isurface);
 		for(iread=0; iread < (N_READS-1); ++iread) {
 			fprintf(stderr, "entering image init loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
@@ -394,7 +395,7 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 		}
 
 		parse_bam_alignments(fp_bam, bam, bam_read_seq, bam_read_qual, NULL, bam_read_mismatch,
-                                                  bam_read_buff_size, s->snp_hash);
+							 bam_read_buff_size, s->snp_hash);
 		char parseTile[10];
 		snprintf(parseTile, 10, "%d", bam_tile);
 		int surface = parseTile[0] - '1';
@@ -429,7 +430,7 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 
 	bam_destroy1(bam);
 	
-    for(isurface=0;isurface<N_SURFACES; ++isurface) {
+	for(isurface=0;isurface<N_SURFACES; ++isurface) {
 		for(iread=0; iread<(N_READS-1); ++iread) {
 			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
 				write_close_image(&tile_img_mismatch[isurface][iread][icycle]);
@@ -509,13 +510,6 @@ static void apply_gaussian_and_threshold(png_bytepp row_p, png_bytepp output_row
 		}
 	}
 }
-
-typedef struct roi {
-	int x;
-	int y;
-	int width;
-	int height;
-} roi_t;
 
 static TileImage_t* read_png_image(const char* fn)
 {
@@ -817,6 +811,86 @@ static xywh_cont_t* make_filter_image(Settings *s, TileImage_t* image, int surfa
 	return objs;
 }
 
+
+static void make_filter_read(Settings *s, int isurface, int iread, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100])
+{
+	int icycle;
+	fprintf(stderr, "entering filter loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
+	s->read_length[iread] = 100; // HACK!
+	for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
+		char* buf_mm = NULL;
+		char* buf_id = NULL;
+		asprintf(&buf_mm, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
+		asprintf(&buf_id, "%s_id_%d_%d_%d.png",s->output, isurface, iread, icycle);
+		TileImage_t* image_mm = read_png_image(buf_mm);
+		TileImage_t* image_id = read_png_image(buf_id);
+		obj_mm[isurface][iread][icycle] = make_filter_image(s, image_mm, isurface, iread, icycle);
+		obj_id[isurface][iread][icycle] = make_filter_image(s, image_id, isurface, iread, icycle);
+	}
+}
+
+static void make_filter_surface(Settings *s, int isurface, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100])
+{
+	if (s->read == -1) {
+		int iread;
+		fprintf(stderr, "entering filter loop surface %d\n", isurface);
+		for(iread=0; iread < (N_READS-1); ++iread) {
+			make_filter_read(s, isurface, iread, obj_mm, obj_id);
+		}
+	} else {
+		make_filter_read(s, isurface, s->read, obj_mm, obj_id);
+	}
+}
+
+static void make_rtree_read(Settings* s, int isurface, int iread, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100],
+							xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100], struct Node* root[N_SURFACES][N_READS-1])
+{
+	fprintf(stderr, "entering rtree loop read %d\n", iread);
+
+	int cycle;
+	for (cycle = 0; cycle < 100; ++cycle) {
+		int iobjs = 0;
+		for (iobjs = 0; iobjs < obj_mm[isurface][iread][cycle]->n; ++iobjs) {
+			struct Rect* r = malloc(sizeof(struct Rect));
+			r->boundary[0] = obj_mm[isurface][iread][cycle]->objs[iobjs].x;
+			r->boundary[1] = obj_mm[isurface][iread][cycle]->objs[iobjs].y;
+			r->boundary[2] = obj_mm[isurface][iread][cycle]->objs[iobjs].xw;
+			r->boundary[3] = obj_mm[isurface][iread][cycle]->objs[iobjs].yh;
+			RTreeInsertRect(r, cycle, &root[isurface][iread], 0);
+		}
+	}
+}
+static void make_rtree_surface(Settings* s, int isurface, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100], struct Node* root[N_SURFACES][N_READS-1])
+{
+	if (s->read == -1) {
+		int iread;
+		fprintf(stderr, "entering rtree loop surface %d\n", isurface);
+		for(iread=0; iread < (N_READS-1); ++iread) {
+			make_rtree_read(s, isurface, iread, obj_mm, obj_id, root);
+		}
+	} else {
+		make_rtree_read(s, isurface, s->read, obj_mm, obj_id, root);
+	}
+}
+
+static void make_rtree(Settings* s, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100], struct Node* root[N_SURFACES][N_READS-1])
+{
+	int isurface;
+	for (isurface = 0 ; isurface < N_SURFACES; ++isurface) {
+		int iread;
+		for (iread = 0; iread < N_READS-1; ++iread) {
+			root[isurface][iread] = RTreeNewIndex();
+		}
+	}
+	if (s->surface == -1) {
+		for(isurface=0; isurface < N_SURFACES; ++isurface) {
+			make_rtree_surface(s, isurface, obj_mm, obj_id, root);
+		}
+	} else {
+		make_rtree_surface(s, s->surface, obj_mm, obj_id, root);
+	}
+}
+
 /*
  * Read in raw mismatch indel and SNP images
  * Transform them to yield object locators
@@ -828,26 +902,17 @@ static void make_filter(Settings *s)
 	xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100];
 	xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100];
 
-	int isurface;
-    for(isurface=0;isurface < N_SURFACES; ++isurface) {
-		int iread;
-		fprintf(stderr, "entering filter loop surface %d\n", isurface);
-		for(iread=0; iread < (N_READS-1); ++iread) {
-			int icycle;
-			fprintf(stderr, "entering filter loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
-			s->read_length[iread] = 100; // HACK!
-			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
-				char* buf_mm = NULL;
-				char* buf_id = NULL;
-				asprintf(&buf_mm, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
-				asprintf(&buf_id, "%s_id_%d_%d_%d.png",s->output, isurface, iread, icycle);
-				TileImage_t* image_mm = read_png_image(buf_mm);
-				TileImage_t* image_id = read_png_image(buf_id);
-				obj_mm[isurface][iread][icycle] = make_filter_image(s, image_mm, isurface, iread, icycle);
-				obj_id[isurface][iread][icycle] = make_filter_image(s, image_id, isurface, iread, icycle);
-			}
+	if (s->surface == -1) {
+		int isurface;
+		for(isurface=0; isurface < N_SURFACES; ++isurface) {
+			make_filter_surface(s, isurface, obj_mm, obj_id);
 		}
+	} else {
+		make_filter_surface(s, s->surface, obj_mm, obj_id);
 	}
+	
+	struct Node* rtree[N_SURFACES][N_READS-1];
+	make_rtree(s, obj_mm, obj_id, rtree);
 }
 
 static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
@@ -997,32 +1062,33 @@ int main(int argc, char **argv)
 	settings.qcfail = 0;
 	settings.snp_file = NULL;
 	settings.snp_hash = NULL;
-	settings.tileArray = NULL;
 	settings.output = NULL;
 	settings.in_bam_file = NULL;
 	settings.read_length[0] = 0;
 	settings.read_length[1] = 0;
 	settings.read_length[2] = 0;
 	settings.working_dir = NULL;
-	settings.region_size = REGION_SIZE;
-	settings.nregions_x = 0;
-	settings.nregions_y = 0;
-	settings.nregions = 0;
+	settings.read = -1;
+	settings.surface = -1;
+	settings.cycle = -1;
 	settings.compress = 1;
 
 	static struct option long_options[] = {
-                   {"snp_file", 1, 0, 's'},
-                   {"help", 0, 0, 'h'},
-                   {"filter", 1, 0, 'F'},
-                   {"version", 0, 0, 'v'},
-                   {0, 0, 0, 0}
-               };
+		{"snp_file", 1, 0, 's'},
+		{"help", 0, 0, 'h'},
+		{"filter", 1, 0, 'F'},
+		{"version", 0, 0, 'v'},
+		{"surface", 0, 0, 'e'},
+		{"read", 0, 0, 'r'},
+		{"cycle", 0, 0, 'i'},
+		{0, 0, 0, 0}
+	};
 
 	int ncmd = 0;
 	char c;
-	while ( (c = getopt_long(argc, argv, "vdcCafuDF:o:i:p:s:x:y:t:qh?", long_options, 0)) != -1) {
+	while ( (c = getopt_long(argc, argv, "vdcCafuDF:o:i:p:s:x:y:e:r:i:qh?", long_options, 0)) != -1) {
 		switch (c) {
-			case 'v':	display("spatial_filter: Version %s\n", version); 
+			case 'v':	display("spatial_filter: Version %s\n", version);
 						exit(0);
 			case 'd':	settings.dump = 1; ncmd++; break;
 			case 'D':	dumpFilter = 1; ncmd++; break;
@@ -1035,6 +1101,9 @@ int main(int argc, char **argv)
 			case 's':	settings.snp_file = optarg;	break;
 			case 'F':	settings.filter = optarg;	break;
 			case 'q':	settings.quiet = 1;			break;
+			case 'e':	settings.surface = atoi(optarg); break;
+			case 'r':	settings.read = atoi(optarg); break;
+			case 'i':	settings.cycle = atoi(optarg); break;
 			case 'h':
 			case '?':	usage(0);					break;
 			default:	display("ERROR: Unknown option %c\n", c);
@@ -1089,17 +1158,17 @@ int main(int argc, char **argv)
 	
 
 	/* calculate the filter */
-    if (settings.calculate_i) {
-        /* read the snp_file */
-        if (NULL != settings.snp_file) {
-            settings.snp_hash = readSnpFile(settings.snp_file);
-            if (NULL == settings.snp_hash) {
-                die("ERROR: reading snp file %s\n", settings.snp_file);
-            }
-        }
+	if (settings.calculate_i) {
+		/* read the snp_file */
+		if (NULL != settings.snp_file) {
+			settings.snp_hash = readSnpFile(settings.snp_file);
+			if (NULL == settings.snp_hash) {
+				die("ERROR: reading snp file %s\n", settings.snp_file);
+			}
+		}
 
-        calculate_filter(&settings);
-    }
+		calculate_filter(&settings);
+	}
 	if (settings.calculate_ii) {
 		make_filter(&settings);
 	}

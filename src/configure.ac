@@ -30,6 +30,21 @@ AX_LIB_IO_LIB(1.12.1,
 AX_LIB_ZLIB(,[have_zlib=yes], [AC_MSG_ERROR([Abort: no zlib. Please rerun configure using the --with-zlib=DIR option.])])
 AX_LIB_SAMTOOLS(0.1.3,[have_bam=yes],[AC_MSG_ERROR([Abort: no samtools. Please rerun configure using the ---with-samtools=DIR option.])])
 
+AC_ARG_WITH([rtree],
+	AC_HELP_STRING([--with-rtree=@<:@ARG@:>@],
+		[use rtree from given prefix (ARG=path)]
+	),
+	[
+	if test -d "$withval"; then
+		librtree_prefix="$withval"
+	fi
+	LIBRTREE_CFLAGS="-I$librtree_prefix/include"
+	LIBRTREE_LDFLAGS="-L$librtree_prefix/lib -lrtree"
+	]
+)
+AC_SUBST(LIBRTREE_CFLAGS)
+AC_SUBST(LIBRTREE_LDFLAGS)
+
 PKG_PROG_PKG_CONFIG
 PKG_CHECK_MODULES(PNG,libpng)
 
