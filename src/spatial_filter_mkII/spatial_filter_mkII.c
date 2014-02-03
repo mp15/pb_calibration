@@ -1074,13 +1074,13 @@ int main(int argc, char **argv)
 	settings.compress = 1;
 
 	static struct option long_options[] = {
-		{"snp_file", 1, 0, 's'},
+		{"snp_file", required_argument, 0, 's'},
 		{"help", 0, 0, 'h'},
 		{"filter", 1, 0, 'F'},
 		{"version", 0, 0, 'v'},
-		{"surface", 0, 0, 'e'},
-		{"read", 0, 0, 'r'},
-		{"cycle", 0, 0, 'i'},
+		{"surface", required_argument, 0, 'e'},
+		{"read", required_argument, 0, 'r'},
+		{"cycle", required_argument, 0, 'i'},
 		{0, 0, 0, 0}
 	};
 
