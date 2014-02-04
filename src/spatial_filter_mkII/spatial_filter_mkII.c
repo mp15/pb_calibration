@@ -698,8 +698,8 @@ static xywh_cont_t* connected_four(png_bytepp bitmap, const int width, const int
 
 	int loop_iter;
 	int count = 0;
-	int* transform_parent = malloc(sizeof(int)*ml_ii);
-	for ( loop_iter = 0; loop_iter < ml_ii; ++loop_iter ) { if (uf_array_data.parent[loop_iter] == 0) {  transform_parent[loop_iter] = count++; } }
+	int* transform_parent = malloc(sizeof(int)*(ml_ii+1));
+	for ( loop_iter = 0; loop_iter < ml_ii+1; ++loop_iter ) { if (uf_array_data.parent[loop_iter] == 0) {  transform_parent[loop_iter] = count++; } }
 	
 	xywh_cont_t* objects = xywh_cont_init(count);
 	int object_iter;
