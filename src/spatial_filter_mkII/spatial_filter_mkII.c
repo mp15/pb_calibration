@@ -701,10 +701,10 @@ static xywh_cont_t* connected_four(png_bytepp bitmap, const int width, const int
 	int* transform_parent = malloc(sizeof(int)*(ml_ii+1));
 	for ( loop_iter = 0; loop_iter < ml_ii+1; ++loop_iter ) { if (uf_array_data.parent[loop_iter] == 0) {  transform_parent[loop_iter] = count++; } }
 	
-	xywh_cont_t* objects = xywh_cont_init(count);
+	xywh_cont_t* objects = xywh_cont_init(count-1);
 	int object_iter;
 	// init the structs
-	for (object_iter = 0; object_iter < count; ++object_iter) {
+	for (object_iter = 0; object_iter < count-1; ++object_iter) {
 		xywh_t* this_obj = objects->objs + object_iter;
 		this_obj->x = width-1;
 		this_obj->y = height-1;
@@ -715,7 +715,8 @@ static xywh_cont_t* connected_four(png_bytepp bitmap, const int width, const int
 	for (y_iter = 0; y_iter < height; ++y_iter) {
 		for (x_iter = 0; x_iter < width; ++x_iter) {
 			int label = transform_parent[label_map[y_iter][x_iter]];
-			xywh_t* this_obj = objects->objs + label;
+			if (label == 0) continue;
+			xywh_t* this_obj = objects->objs + label - 1;
 			if ( this_obj->x > x_iter ) this_obj->x = x_iter;
 			if ( this_obj->y > y_iter ) this_obj->y = y_iter;
 			if ( this_obj->xw < x_iter ) this_obj->xw = x_iter;
@@ -730,7 +731,7 @@ static xywh_cont_t* connected_four(png_bytepp bitmap, const int width, const int
 // TRACE
 	int print_obj_iter;
 	printf("dumping object list:\n");
-	for (print_obj_iter = 0; print_obj_iter < count; ++print_obj_iter)
+	for (print_obj_iter = 0; print_obj_iter < count-1; ++print_obj_iter)
 	{
 		xywh_t* this_obj = objects->objs + print_obj_iter;
 		printf("%d: (%d,%d)-(%d,%d)\n",print_obj_iter, this_obj->x, this_obj->y, this_obj->xw, this_obj->yh );
