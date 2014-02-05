@@ -885,7 +885,7 @@ static void make_filter_read(Settings *s, int isurface, int iread)
 		xywh_cont_t* obj_id = make_filter_image(s, image_id, isurface, iread, icycle);
 		// Write to file
 		char* obj_id_buf = NULL;
-		asprintf(&obj_id_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
+		asprintf(&obj_id_buf, "%s_id_%d_%d_%d.obj",s->output, isurface, iread, icycle);
 		FILE* obj_id_file = fopen(obj_id_buf,"w");
 		fwrite_xywh_cont(obj_id, obj_id_file);
 		fclose(obj_id_file);
