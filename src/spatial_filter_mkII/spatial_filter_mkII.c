@@ -918,7 +918,7 @@ static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* r
 		char* obj_mm_buf = NULL;
 		xywh_cont_t* obj_mm = NULL;
 		asprintf(&obj_mm_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
-		FILE* obj_mm_file = fopen(obj_mm_buf,"w");
+		FILE* obj_mm_file = fopen(obj_mm_buf,"r");
 		fread_xywh_cont(&obj_mm, obj_mm_file);
 		fclose(obj_mm_file);
 
