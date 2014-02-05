@@ -114,12 +114,14 @@ typedef struct {
 	int dump;
 	bool calculate_i;
 	bool calculate_ii;
+	bool calculate_iii;
 	bool apply;
 	int qcfail;
 	int quiet;
 	int surface;
 	int read;
-	int cycle;
+	int min_cycle_idx;
+	int max_cycle_idx;
 	int compress;
 } Settings;
 
@@ -631,6 +633,40 @@ xywh_cont_t* xywh_cont_init(size_t count)
 	return retval;
 }
 
+void xywh_cont_free(xywh_cont_t* restrict data)
+{
+	free(data->objs);
+	free(data);
+}
+
+size_t fwrite_xywh_cont(const xywh_cont_t* restrict data, FILE* restrict file)
+{
+	size_t n = fwrite( &data->n, sizeof(size_t), 1, file );
+	if (n == 0) return 0;
+	size_t o = fwrite( data->objs, sizeof(xywh_t), data->n, file );
+	if (o == 0) return 0;
+	return n+o;
+}
+
+size_t fread_xywh_cont( xywh_cont_t** restrict data, FILE* restrict file)
+{
+	xywh_cont_t* retval = (xywh_cont_t*)malloc(sizeof(xywh_cont_t));
+	size_t n = fread( &retval->n, sizeof(size_t), 1, file );
+	if (n == 0){
+		free(retval);
+		return 0;
+	}
+	retval->objs = (xywh_t*)malloc(sizeof(xywh_t) * retval->n);
+	size_t o = fread( retval->objs, sizeof(xywh_t), retval->n, file );
+	if (o == 0){
+		free(retval->objs);
+		free(retval);
+		return 0;
+	}
+	*data = retval;
+	return n+o;
+}
+
 /*
  * @returns int[height][width] array of labels corresponding to bitmap
  */
@@ -812,70 +848,110 @@ static xywh_cont_t* make_filter_image(Settings *s, TileImage_t* image, int surfa
 	return objs;
 }
 
-
-static void make_filter_read(Settings *s, int isurface, int iread, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100])
+static void make_filter_read(Settings *s, int isurface, int iread)
 {
-	int icycle;
 	fprintf(stderr, "entering filter loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
+	int icycle;
+	
 	s->read_length[iread] = 100; // HACK!
-	for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
+	int min = s->min_cycle_idx != -1 ? s->min_cycle_idx : 0;
+	int max = s->read_length[iread];
+	if ( s->max_cycle_idx != -1 ) {
+		max = s->read_length[iread] < s->max_cycle_idx? s->read_length[iread] : s->max_cycle_idx;
+	}
+	
+	for(icycle=min; icycle < max; ++icycle) {
+		// Load images
 		char* buf_mm = NULL;
 		char* buf_id = NULL;
 		asprintf(&buf_mm, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
 		asprintf(&buf_id, "%s_id_%d_%d_%d.png",s->output, isurface, iread, icycle);
 		TileImage_t* image_mm = read_png_image(buf_mm);
 		TileImage_t* image_id = read_png_image(buf_id);
-		obj_mm[isurface][iread][icycle] = make_filter_image(s, image_mm, isurface, iread, icycle);
-		obj_id[isurface][iread][icycle] = make_filter_image(s, image_id, isurface, iread, icycle);
+		free(buf_mm);
+		free(buf_id);
+
+		// Get objects in image
+		xywh_cont_t* obj_mm = make_filter_image(s, image_mm, isurface, iread, icycle);
+		// Write to file
+		char* obj_mm_buf = NULL;
+		asprintf(&obj_mm_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
+		FILE* obj_mm_file = fopen(obj_mm_buf,"w");
+		fwrite_xywh_cont(obj_mm, obj_mm_file);
+		fclose(obj_mm_file);
+		xywh_cont_free(obj_mm);
+		
+		// Get objects in image
+		xywh_cont_t* obj_id = make_filter_image(s, image_id, isurface, iread, icycle);
+		// Write to file
+		char* obj_id_buf = NULL;
+		asprintf(&obj_id_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
+		FILE* obj_id_file = fopen(obj_id_buf,"w");
+		fwrite_xywh_cont(obj_id, obj_id_file);
+		fclose(obj_id_file);
+		xywh_cont_free(obj_id);
 	}
 }
 
-static void make_filter_surface(Settings *s, int isurface, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100])
+static void make_filter_surface(Settings *s, int isurface)
 {
 	if (s->read == -1) {
 		int iread;
 		fprintf(stderr, "entering filter loop surface %d\n", isurface);
 		for(iread=0; iread < (N_READS-1); ++iread) {
-			make_filter_read(s, isurface, iread, obj_mm, obj_id);
+			make_filter_read(s, isurface, iread);
 		}
 	} else {
-		make_filter_read(s, isurface, s->read, obj_mm, obj_id);
+		make_filter_read(s, isurface, s->read);
 	}
 }
 
-static void make_rtree_read(Settings* s, int isurface, int iread, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100],
-							xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100], struct Node* root[N_SURFACES][N_READS-1])
+static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* root[N_SURFACES][N_READS-1])
 {
 	fprintf(stderr, "entering rtree loop read %d\n", iread);
 
-	int cycle;
-	for (cycle = 0; cycle < 100; ++cycle) {
-		int iobjs = 0;
-		for (iobjs = 0; iobjs < obj_mm[isurface][iread][cycle]->n; ++iobjs) {
+	s->read_length[iread] = 100; // HACK!
+
+	int icycle;
+	for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
+		// Read objects from file
+		char* obj_mm_buf = NULL;
+		xywh_cont_t* obj_mm = NULL;
+		asprintf(&obj_mm_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
+		FILE* obj_mm_file = fopen(obj_mm_buf,"w");
+		fread_xywh_cont(&obj_mm, obj_mm_file);
+		fclose(obj_mm_file);
+
+		// Add to rtree
+		int iobjs;
+		for (iobjs = 0; iobjs < obj_mm->n; ++iobjs) {
 			struct Rect* r = malloc(sizeof(struct Rect));
-			r->boundary[0] = obj_mm[isurface][iread][cycle]->objs[iobjs].x;
-			r->boundary[1] = obj_mm[isurface][iread][cycle]->objs[iobjs].y;
-			r->boundary[2] = obj_mm[isurface][iread][cycle]->objs[iobjs].xw;
-			r->boundary[3] = obj_mm[isurface][iread][cycle]->objs[iobjs].yh;
-			RTreeInsertRect(r, cycle, &root[isurface][iread], 0);
+			r->boundary[0] = obj_mm->objs[iobjs].x;
+			r->boundary[1] = obj_mm->objs[iobjs].y;
+			r->boundary[2] = obj_mm->objs[iobjs].xw;
+			r->boundary[3] = obj_mm->objs[iobjs].yh;
+			RTreeInsertRect(r, icycle, &root[isurface][iread], 0);
 		}
+		xywh_cont_free(obj_mm);
 	}
 }
-static void make_rtree_surface(Settings* s, int isurface, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100], struct Node* root[N_SURFACES][N_READS-1])
+static void make_rtree_surface(Settings* s, int isurface, struct Node* root[N_SURFACES][N_READS-1])
 {
 	if (s->read == -1) {
 		int iread;
 		fprintf(stderr, "entering rtree loop surface %d\n", isurface);
 		for(iread=0; iread < (N_READS-1); ++iread) {
-			make_rtree_read(s, isurface, iread, obj_mm, obj_id, root);
+			make_rtree_read(s, isurface, iread, root);
 		}
 	} else {
-		make_rtree_read(s, isurface, s->read, obj_mm, obj_id, root);
+		make_rtree_read(s, isurface, s->read, root);
 	}
 }
 
-static void make_rtree(Settings* s, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100], xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100], struct Node* root[N_SURFACES][N_READS-1])
+static void make_rtree(Settings* s)
 {
+	struct Node* root[N_SURFACES][N_READS-1];
+
 	int isurface;
 	for (isurface = 0 ; isurface < N_SURFACES; ++isurface) {
 		int iread;
@@ -885,10 +961,10 @@ static void make_rtree(Settings* s, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][1
 	}
 	if (s->surface == -1) {
 		for(isurface=0; isurface < N_SURFACES; ++isurface) {
-			make_rtree_surface(s, isurface, obj_mm, obj_id, root);
+			make_rtree_surface(s, isurface, root);
 		}
 	} else {
-		make_rtree_surface(s, s->surface, obj_mm, obj_id, root);
+		make_rtree_surface(s, s->surface, root);
 	}
 }
 
@@ -900,20 +976,15 @@ static void make_rtree(Settings* s, xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][1
 static void make_filter(Settings *s)
 {
 	fprintf(stderr, "entering filter loop\n");
-	xywh_cont_t* obj_mm[N_SURFACES][N_READS-1][100];
-	xywh_cont_t* obj_id[N_SURFACES][N_READS-1][100];
 
 	if (s->surface == -1) {
 		int isurface;
 		for(isurface=0; isurface < N_SURFACES; ++isurface) {
-			make_filter_surface(s, isurface, obj_mm, obj_id);
+			make_filter_surface(s, isurface);
 		}
 	} else {
-		make_filter_surface(s, s->surface, obj_mm, obj_id);
+		make_filter_surface(s, s->surface);
 	}
-	
-	struct Node* rtree[N_SURFACES][N_READS-1];
-	make_rtree(s, obj_mm, obj_id, rtree);
 }
 
 static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
@@ -1059,6 +1130,7 @@ int main(int argc, char **argv)
 	settings.dump = 0;
 	settings.calculate_i = false;
 	settings.calculate_ii = false;
+	settings.calculate_iii = false;
 	settings.apply = false;
 	settings.qcfail = 0;
 	settings.snp_file = NULL;
@@ -1071,7 +1143,8 @@ int main(int argc, char **argv)
 	settings.working_dir = NULL;
 	settings.read = -1;
 	settings.surface = -1;
-	settings.cycle = -1;
+	settings.min_cycle_idx = -1;
+	settings.max_cycle_idx = -1;
 	settings.compress = 1;
 
 	static struct option long_options[] = {
@@ -1081,13 +1154,14 @@ int main(int argc, char **argv)
 		{"version", 0, 0, 'v'},
 		{"surface", required_argument, 0, 'e'},
 		{"read", required_argument, 0, 'r'},
-		{"cycle", required_argument, 0, 'i'},
+		{"min_cycle", required_argument, 0, 'm'},
+		{"max_cycle", required_argument, 0, 'M'},
 		{0, 0, 0, 0}
 	};
 
 	int ncmd = 0;
 	char c;
-	while ( (c = getopt_long(argc, argv, "vdcCafuDF:o:i:p:s:x:y:e:r:i:qh?", long_options, 0)) != -1) {
+	while ( (c = getopt_long(argc, argv, "vdcCRafuDF:o:i:p:s:x:y:e:r:m:M:qh?", long_options, 0)) != -1) {
 		switch (c) {
 			case 'v':	display("spatial_filter: Version %s\n", version);
 						exit(0);
@@ -1095,6 +1169,7 @@ int main(int argc, char **argv)
 			case 'D':	dumpFilter = 1; ncmd++; break;
 			case 'c':	settings.calculate_i = true; ncmd++; break;
 			case 'C':	settings.calculate_ii = true; ncmd++; break;
+			case 'R':	settings.calculate_iii = true; ncmd++; break;
 			case 'a':	settings.apply = true; ncmd++; break;
 			case 'f':	settings.qcfail = 1;		break;
 			case 'u':	settings.compress = 0;		break;
@@ -1104,7 +1179,8 @@ int main(int argc, char **argv)
 			case 'q':	settings.quiet = 1;			break;
 			case 'e':	settings.surface = atoi(optarg); break;
 			case 'r':	settings.read = atoi(optarg); break;
-			case 'i':	settings.cycle = atoi(optarg); break;
+			case 'm':	settings.min_cycle_idx = atoi(optarg) - 1; break;
+			case 'M':	settings.max_cycle_idx = atoi(optarg); break;
 			case 'h':
 			case '?':	usage(0);					break;
 			default:	display("ERROR: Unknown option %c\n", c);
@@ -1172,6 +1248,10 @@ int main(int argc, char **argv)
 	}
 	if (settings.calculate_ii) {
 		make_filter(&settings);
+	}
+	
+	if (settings.calculate_iii) {
+		make_rtree(&settings);
 	}
 	if (settings.apply) {
 		filter_bam(&settings);
