@@ -921,6 +921,7 @@ static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* r
 		FILE* obj_mm_file = fopen(obj_mm_buf,"r");
 		fread_xywh_cont(&obj_mm, obj_mm_file);
 		fclose(obj_mm_file);
+		free(obj_mm_file);
 
 		// Add to rtree
 		int iobjs;
