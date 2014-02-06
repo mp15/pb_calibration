@@ -114,7 +114,6 @@ typedef struct {
 	int dump;
 	bool calculate_i;
 	bool calculate_ii;
-	bool calculate_iii;
 	bool apply;
 	int qcfail;
 	int quiet;
@@ -657,6 +656,10 @@ size_t fread_xywh_cont( xywh_cont_t** restrict data, FILE* restrict file)
 		return 0;
 	}
 	retval->objs = (xywh_t*)malloc(sizeof(xywh_t) * retval->n);
+	if (retval->n == 0) {
+		*data = retval;
+		return n;
+	}
 	size_t o = fread( retval->objs, sizeof(xywh_t), retval->n, file );
 	if (o == 0){
 		free(retval->objs);
@@ -919,9 +922,10 @@ static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* r
 		xywh_cont_t* obj_mm = NULL;
 		asprintf(&obj_mm_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
 		FILE* obj_mm_file = fopen(obj_mm_buf,"r");
-		fread_xywh_cont(&obj_mm, obj_mm_file);
+		if ( obj_mm_file == NULL ) { perror("Warning could not open file"); continue; }
+		if ( fread_xywh_cont(&obj_mm, obj_mm_file) == 0 ) { fprintf(stderr, "Cannot read object from file %s.\n", obj_mm_buf); continue; }
 		fclose(obj_mm_file);
-		free(obj_mm_file);
+		free(obj_mm_buf);
 
 		// Add to rtree
 		int iobjs;
@@ -931,7 +935,8 @@ static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* r
 			r->boundary[1] = obj_mm->objs[iobjs].y;
 			r->boundary[2] = obj_mm->objs[iobjs].xw;
 			r->boundary[3] = obj_mm->objs[iobjs].yh;
-			RTreeInsertRect(r, icycle, &root[isurface][iread], 0);
+			// Shift icycle by 1 to avoid complaints about null pointers
+			RTreeInsertRect(r, icycle+1, &root[isurface][iread], 0);
 		}
 		xywh_cont_free(obj_mm);
 	}
@@ -949,10 +954,8 @@ static void make_rtree_surface(Settings* s, int isurface, struct Node* root[N_SU
 	}
 }
 
-static void make_rtree(Settings* s)
-{
-	struct Node* root[N_SURFACES][N_READS-1];
-
+static void make_rtree(Settings* s, struct Node* root[N_SURFACES][N_READS-1])
+{	// Init Rtrees
 	int isurface;
 	for (isurface = 0 ; isurface < N_SURFACES; ++isurface) {
 		int iread;
@@ -960,6 +963,7 @@ static void make_rtree(Settings* s)
 			root[isurface][iread] = RTreeNewIndex();
 		}
 	}
+	// Create rtrees from objects
 	if (s->surface == -1) {
 		for(isurface=0; isurface < N_SURFACES; ++isurface) {
 			make_rtree_surface(s, isurface, root);
@@ -989,7 +993,7 @@ static void make_filter(Settings *s)
 }
 
 static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
-			   size_t * nreads, size_t * nfiltered, const xywh_t* objects, const size_t count)
+			   size_t * nreads, size_t * nfiltered, struct Node* rtrees[N_SURFACES][N_READS-1])
 {
 	bam1_t* bam = bam_init1();
 	while (1) {
@@ -1000,14 +1004,26 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 		if (parse_bam_readinfo(fp_in_bam, bam, &bam_lane, &bam_tile, &bam_x, &bam_y, &bam_read, NULL)) {
 			break;	/* break on end of BAM file */
 		}
-		int i;
+		
+		char parseTile[10];
+		snprintf(parseTile, 10, "%d", bam_tile);
+		int surface = parseTile[0] - '1';
+		int swath = parseTile[1] - '1';
+		int tile = atoi(parseTile+2)-1;
+		bam_x += (swath*20480); // FIXME: get these two constants from settings?
+		bam_y += (tile*100000);
+
 		bool filtered = false;
-		for (i = 1; i < count; ++i) {
-			const xywh_t* this_obj = objects + i;
-			if ( this_obj->x <= bam_x && this_obj->xw > bam_x && this_obj->y <= bam_y && this_obj->yh > bam_y ) filtered = true;
-		}
+		const struct Node* rtree = rtrees[surface][bam_read];
+		struct Rect search_rect = {
+			{bam_x, bam_y, bam_x, bam_y}
+		};
+
+		if (RTreeSearch(rtree, &search_rect, NULL, 0) != 0) { filtered = true; };
+		
 		if (!filtered) {
 			if (0 > samwrite(fp_out_bam, bam)) die("Error: writing bam file\n");
+		} else {
 			++(*nfiltered);
 		}
 	}
@@ -1017,7 +1033,7 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 }
 
 
-static int filter_bam(const Settings * s)
+static int filter_bam(Settings * s)
 {
 	samfile_t * fp_in_bam = NULL;
 	samfile_t * fp_out_bam = NULL;
@@ -1027,7 +1043,7 @@ static int filter_bam(const Settings * s)
 		die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
 	}
 
-	fp_out_bam = samopen(s->output, "wb", 0);
+	fp_out_bam = samopen(s->output, "wb", fp_in_bam->header);
 	if (NULL == fp_out_bam) {
 		die("ERROR: can't open bam file %s: %s\n", s->output, strerror(errno));
 	}
@@ -1035,10 +1051,11 @@ static int filter_bam(const Settings * s)
 	size_t n_reads = 0;
 	size_t n_filtered = 0;
 	
-	xywh_t* objects = NULL;
-	size_t count = 0;
+	struct Node* rtree[N_SURFACES][N_READS-1];
 	
-	if (0 != filter_bam_inner(fp_in_bam, fp_out_bam, &n_reads, &n_filtered, objects,  count )) return 1;
+	make_rtree(s, rtree);
+	
+	if (0 != filter_bam_inner(fp_in_bam, fp_out_bam, &n_reads, &n_filtered, rtree )) return 1;
 	return 0;
 }
 
@@ -1131,7 +1148,6 @@ int main(int argc, char **argv)
 	settings.dump = 0;
 	settings.calculate_i = false;
 	settings.calculate_ii = false;
-	settings.calculate_iii = false;
 	settings.apply = false;
 	settings.qcfail = 0;
 	settings.snp_file = NULL;
@@ -1162,7 +1178,7 @@ int main(int argc, char **argv)
 
 	int ncmd = 0;
 	char c;
-	while ( (c = getopt_long(argc, argv, "vdcCRafuDF:o:i:p:s:x:y:e:r:m:M:qh?", long_options, 0)) != -1) {
+	while ( (c = getopt_long(argc, argv, "vdcCafuDF:o:i:p:s:x:y:e:r:m:M:qh?", long_options, 0)) != -1) {
 		switch (c) {
 			case 'v':	display("spatial_filter: Version %s\n", version);
 						exit(0);
@@ -1170,7 +1186,6 @@ int main(int argc, char **argv)
 			case 'D':	dumpFilter = 1; ncmd++; break;
 			case 'c':	settings.calculate_i = true; ncmd++; break;
 			case 'C':	settings.calculate_ii = true; ncmd++; break;
-			case 'R':	settings.calculate_iii = true; ncmd++; break;
 			case 'a':	settings.apply = true; ncmd++; break;
 			case 'f':	settings.qcfail = 1;		break;
 			case 'u':	settings.compress = 0;		break;
@@ -1251,9 +1266,7 @@ int main(int argc, char **argv)
 		make_filter(&settings);
 	}
 	
-	if (settings.calculate_iii) {
-		make_rtree(&settings);
-	}
+
 	if (settings.apply) {
 		filter_bam(&settings);
 	}
