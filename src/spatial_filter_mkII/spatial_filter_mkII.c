@@ -48,6 +48,8 @@
 #include "pb_config.h"
 #endif
 
+#define _GNU_SOURCE // for asprintf
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
@@ -1014,7 +1016,7 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 		bam_y += (tile*100000);
 
 		bool filtered = false;
-		const struct Node* rtree = rtrees[surface][bam_read];
+		const struct Node* rtree = rtrees[surface][bam_read-1];
 		struct Rect search_rect = {
 			{bam_x, bam_y, bam_x, bam_y}
 		};
