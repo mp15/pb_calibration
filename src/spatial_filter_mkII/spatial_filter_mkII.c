@@ -325,8 +325,7 @@ static void nowrite_close_image(TileImage_t* img)
 
 static bool update_surface_cycle_image(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
 	int cycle;
-	y /= 10;
-	x /= 10;
+
 	for (cycle = 0; cycle < s->read_length[read]; cycle++) {
 		if (read_mismatch[cycle] & (BASE_INSERTION|BASE_DELETION)) {
 			ROWBINARYSET(x,y,row_indel_image[read][cycle].bitmap);
@@ -406,6 +405,8 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 		int tile = atoi(parseTile+2)-1;
 		bam_x += (swath*20480); // FIXME: get these two constants from settings?
 		bam_y += (tile*100000);
+		bam_x /= 10;
+		bam_y /= 10;
 
 		read_length = strlen(bam_read_seq);
 		if (0 == s->read_length[bam_read]) {
@@ -1007,6 +1008,7 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 			break;	/* break on end of BAM file */
 		}
 		
+		// Parse tile info to reveal detail
 		char parseTile[10];
 		snprintf(parseTile, 10, "%d", bam_tile);
 		int surface = parseTile[0] - '1';
@@ -1014,6 +1016,9 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 		int tile = atoi(parseTile+2)-1;
 		bam_x += (swath*20480); // FIXME: get these two constants from settings?
 		bam_y += (tile*100000);
+		// transform X and Y to match transform used to create images
+		bam_x /= 10 * DOWNSAMPLE_AMOUNT;
+		bam_y /= 10 * DOWNSAMPLE_AMOUNT;
 
 		bool filtered = false;
 		const struct Node* rtree = rtrees[surface][bam_read-1];
@@ -1021,7 +1026,9 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 			{bam_x, bam_y, bam_x, bam_y}
 		};
 
-		if (RTreeSearch(rtree, &search_rect, NULL, 0) != 0) { filtered = true; };
+		if (RTreeSearch(rtree, &search_rect, NULL, 0) != 0) {
+			filtered = true;
+		}
 		
 		if (!filtered) {
 			if (0 > samwrite(fp_out_bam, bam)) die("Error: writing bam file\n");
@@ -1058,6 +1065,7 @@ static int filter_bam(Settings * s)
 	make_rtree(s, rtree);
 	
 	if (0 != filter_bam_inner(fp_in_bam, fp_out_bam, &n_reads, &n_filtered, rtree )) return 1;
+	fprintf(stderr, "n_reads: %zu n_filtered: %zu\n", n_reads, n_filtered);
 	return 0;
 }
 
