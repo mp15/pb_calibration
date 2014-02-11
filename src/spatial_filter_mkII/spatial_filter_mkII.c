@@ -912,7 +912,43 @@ static void make_filter_surface(Settings *s, int isurface)
 	}
 }
 
-static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* root[N_SURFACES][N_READS-1])
+typedef struct rtree_entry {
+	int read;
+	int idmm;
+	int cycle;
+} rtree_entry_t;
+
+static void obj_to_rtree(char* output, int idmm, int isurface, int iread, int icycle, struct Node* root[N_SURFACES])
+{
+	// Read objects from file
+	char* obj_mm_buf = NULL;
+	xywh_cont_t* obj_mm = NULL;
+	asprintf(&obj_mm_buf, "%s_%s_%d_%d_%d.obj", output, idmm == 0 ? "id":"mm", isurface, iread, icycle);
+	FILE* obj_mm_file = fopen(obj_mm_buf,"r");
+	if ( obj_mm_file == NULL ) { perror("Warning could not open file"); return; }
+	if ( fread_xywh_cont(&obj_mm, obj_mm_file) == 0 ) { fprintf(stderr, "Cannot read object from file %s.\n", obj_mm_buf); return; }
+	fclose(obj_mm_file);
+	free(obj_mm_buf);
+	
+	// Add to rtree
+	int iobjs;
+	for (iobjs = 0; iobjs < obj_mm->n; ++iobjs) {
+		struct Rect* r = malloc(sizeof(struct Rect));
+		r->boundary[0] = obj_mm->objs[iobjs].x;
+		r->boundary[1] = obj_mm->objs[iobjs].y;
+		r->boundary[2] = obj_mm->objs[iobjs].xw;
+		r->boundary[3] = obj_mm->objs[iobjs].yh;
+
+		rtree_entry_t* entry = (rtree_entry_t*)malloc(sizeof(rtree_entry_t));
+		entry->read = iread;
+		entry->idmm = 1;
+		entry->cycle = icycle;
+		RTreeInsertRect(r, (int64_t)entry, &root[isurface], 0);
+	}
+	xywh_cont_free(obj_mm);
+}
+
+static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* root[N_SURFACES])
 {
 	fprintf(stderr, "entering rtree loop read %d\n", iread);
 
@@ -920,31 +956,11 @@ static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* r
 
 	int icycle;
 	for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
-		// Read objects from file
-		char* obj_mm_buf = NULL;
-		xywh_cont_t* obj_mm = NULL;
-		asprintf(&obj_mm_buf, "%s_mm_%d_%d_%d.obj",s->output, isurface, iread, icycle);
-		FILE* obj_mm_file = fopen(obj_mm_buf,"r");
-		if ( obj_mm_file == NULL ) { perror("Warning could not open file"); continue; }
-		if ( fread_xywh_cont(&obj_mm, obj_mm_file) == 0 ) { fprintf(stderr, "Cannot read object from file %s.\n", obj_mm_buf); continue; }
-		fclose(obj_mm_file);
-		free(obj_mm_buf);
-
-		// Add to rtree
-		int iobjs;
-		for (iobjs = 0; iobjs < obj_mm->n; ++iobjs) {
-			struct Rect* r = malloc(sizeof(struct Rect));
-			r->boundary[0] = obj_mm->objs[iobjs].x;
-			r->boundary[1] = obj_mm->objs[iobjs].y;
-			r->boundary[2] = obj_mm->objs[iobjs].xw;
-			r->boundary[3] = obj_mm->objs[iobjs].yh;
-			// Shift icycle by 1 to avoid complaints about null pointers
-			RTreeInsertRect(r, icycle+1, &root[isurface][iread], 0);
-		}
-		xywh_cont_free(obj_mm);
+		obj_to_rtree(s->output, 0, isurface, iread, icycle, root);
+		obj_to_rtree(s->output, 1, isurface, iread, icycle, root);
 	}
 }
-static void make_rtree_surface(Settings* s, int isurface, struct Node* root[N_SURFACES][N_READS-1])
+static void make_rtree_surface(Settings* s, int isurface, struct Node* root[N_SURFACES])
 {
 	if (s->read == -1) {
 		int iread;
@@ -957,14 +973,11 @@ static void make_rtree_surface(Settings* s, int isurface, struct Node* root[N_SU
 	}
 }
 
-static void make_rtree(Settings* s, struct Node* root[N_SURFACES][N_READS-1])
+static void make_rtree(Settings* s, struct Node* root[N_SURFACES])
 {	// Init Rtrees
 	int isurface;
 	for (isurface = 0 ; isurface < N_SURFACES; ++isurface) {
-		int iread;
-		for (iread = 0; iread < N_READS-1; ++iread) {
-			root[isurface][iread] = RTreeNewIndex();
-		}
+		root[isurface] = RTreeNewIndex();
 	}
 	// Create rtrees from objects
 	if (s->surface == -1) {
@@ -995,8 +1008,48 @@ static void make_filter(Settings *s)
 	}
 }
 
+typedef struct state {
+	bam1_t* read;
+	bool filter;
+	int hit;
+	int points[2];
+} state_t;
+
+bool ellipse_hit(const struct Rect circle, int points[2])
+{
+	double a = (circle.boundary[2] - circle.boundary[0])/2.0;
+	double b = (circle.boundary[3] - circle.boundary[1])/2.0;
+	double x = (double)points[0] - circle.boundary[0] + a;
+	double y = (double)points[1] - circle.boundary[1] + b;
+	
+	double in = ((x*x)/(a*a)) + ((y*y)/(b*b));
+	
+	return in <= 1.0;
+}
+
+int filter_read_callback(const struct Rect r, int64_t id, void* arg)
+{
+	rtree_entry_t* entry = (rtree_entry_t*) id;
+	state_t* s = (state_t*) arg;
+	if (ellipse_hit(r, s->points)) {
+		s->hit++;
+		if (entry->idmm == 0) {
+			// Kill all INDELs in this version
+			s->filter = true;
+		} else {
+			// Mismatch? flatten just that cycle
+			int cycle = entry->cycle;
+			if ( s->read->core.l_qseq > cycle ) {
+				bam1_seq_seti(bam1_seq(s->read), cycle, 15 /*'N'*/);
+				bam1_qual(s->read)[cycle] =  0;
+			}
+		}
+	}
+	return 0;
+}
+
 static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
-			   size_t * nreads, size_t * nfiltered, struct Node* rtrees[N_SURFACES][N_READS-1])
+			   size_t * nreads, size_t * nfiltered, struct Node* rtrees[N_SURFACES])
 {
 	bam1_t* bam = bam_init1();
 	while (1) {
@@ -1020,17 +1073,21 @@ static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
 		bam_x /= 10 * DOWNSAMPLE_AMOUNT;
 		bam_y /= 10 * DOWNSAMPLE_AMOUNT;
 
-		bool filtered = false;
-		const struct Node* rtree = rtrees[surface][bam_read-1];
+		
+		const struct Node* rtree = rtrees[surface];
 		struct Rect search_rect = {
 			{bam_x, bam_y, bam_x, bam_y}
 		};
 
-		if (RTreeSearch(rtree, &search_rect, NULL, 0) != 0) {
-			filtered = true;
-		}
-		
-		if (!filtered) {
+		state_t* s = (state_t*)malloc(sizeof(state_t));
+		s->read = bam;
+		s->hit = 0;
+		s->filter = false;
+		s->points[0] = bam_x; s->points[1] = bam_y;
+
+		RTreeSearch(rtree, &search_rect, &filter_read_callback, s);
+
+		if (!s->filter) {
 			if (0 > samwrite(fp_out_bam, bam)) die("Error: writing bam file\n");
 		} else {
 			++(*nfiltered);
@@ -1060,7 +1117,7 @@ static int filter_bam(Settings * s)
 	size_t n_reads = 0;
 	size_t n_filtered = 0;
 	
-	struct Node* rtree[N_SURFACES][N_READS-1];
+	struct Node* rtree[N_SURFACES];
 	
 	make_rtree(s, rtree);
 	
