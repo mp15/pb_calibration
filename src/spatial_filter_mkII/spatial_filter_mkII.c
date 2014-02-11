@@ -1123,6 +1123,9 @@ static int filter_bam(Settings * s)
 	
 	if (0 != filter_bam_inner(fp_in_bam, fp_out_bam, &n_reads, &n_filtered, rtree )) return 1;
 	fprintf(stderr, "n_reads: %zu n_filtered: %zu\n", n_reads, n_filtered);
+	
+	samclose(fp_out_bam);
+	samclose(fp_in_bam);
 	return 0;
 }
 
