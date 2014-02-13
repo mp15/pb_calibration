@@ -104,26 +104,27 @@
 
 #define REGION_STATE_MASK  (REGION_STATE_INSERTION | REGION_STATE_DELETION)  // region mask used to filter reads
 
+#define READ_LEN 100
+
 typedef struct {
 	char *cmdline;
-	char *filter;
 	char *snp_file;
 	char *in_bam_file;
 	HashTable *snp_hash;
 	char *working_dir;
 	char *output;
 	int read_length[N_READS];
-	int dump;
 	bool calculate_i;
 	bool calculate_ii;
 	bool apply;
-	int qcfail;
-	int quiet;
+	bool qcfail;
+	bool quiet;
 	int surface;
 	int read;
 	int min_cycle_idx;
 	int max_cycle_idx;
 	int compress;
+	bool dump_label_image;
 } Settings;
 
 
@@ -367,7 +368,7 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 		fprintf(stderr, "entering image init loop surface %d\n", isurface);
 		for(iread=0; iread < (N_READS-1); ++iread) {
 			fprintf(stderr, "entering image init loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
-			s->read_length[iread] = 100; // HACK!
+			s->read_length[iread] = READ_LEN; // HACK!
 			tile_img_mismatch[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
 			tile_img_indel[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
 			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
@@ -673,6 +674,59 @@ size_t fread_xywh_cont( xywh_cont_t** restrict data, FILE* restrict file)
 	return n+o;
 }
 
+
+#ifdef DUMPMAP
+static void dumpMap(unsigned char** map, const char* filename)
+{
+	TileImage_t* img;
+	img = (TileImage_t*)malloc(sizeof(TileImage_t));
+	
+	img->png = png_create_write_struct
+	(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!img->png)
+	{
+		free(img);
+		return;
+	}
+	
+	img->png_header = png_create_info_struct(img->png);
+	if (!img->png_header)
+	{
+		png_destroy_write_struct(&img->png,
+								 (png_infopp)NULL);
+		free(img);
+		return;
+	}
+	
+	img->file_ptr = fopen(filename, "wb");
+	if (!img->file_ptr)
+	{
+		png_destroy_write_struct(&img->png,
+								 &img->png_header);
+		free(img);
+		return;
+	}
+	
+	png_init_io(img->png, img->file_ptr);
+	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+	png_write_info(img->png, img->png_header);
+	img->bitmap = map;
+	
+	png_write_image(img->png, img->bitmap);
+	png_write_end(img->png, img->png_header);
+	
+	int i;
+	for (i = 0; i < Y_LEN; ++i) {
+		png_free(img->png, img->bitmap[i]);
+	}
+	png_free(img->png, img->bitmap);
+	
+	png_destroy_write_struct(&img->png, &img->png_header);
+	fclose(img->file_ptr);
+}
+#endif
+
+
 /*
  * @returns int[height][width] array of labels corresponding to bitmap
  */
@@ -782,62 +836,9 @@ static xywh_cont_t* connected_four(png_bytepp bitmap, const int width, const int
 	return objects;
 }
 
-#ifdef DUMPMAP
-static void dumpMap(unsigned char** map)
-{
-	TileImage_t* img;
-	img = (TileImage_t*)malloc(sizeof(TileImage_t));
-	
-	img->png = png_create_write_struct
-	(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-	if (!img->png)
-	{
-		free(img);
-		return;
-	}
-	
-	img->png_header = png_create_info_struct(img->png);
-	if (!img->png_header)
-	{
-		png_destroy_write_struct(&img->png,
-								 (png_infopp)NULL);
-		free(img);
-		return;
-	}
-	
-	img->file_ptr = fopen("map.png", "wb");
-	if (!img->file_ptr)
-	{
-		png_destroy_write_struct(&img->png,
-								 &img->png_header);
-		free(img);
-		return;
-	}
-	
-	png_init_io(img->png, img->file_ptr);
-	png_set_IHDR(img->png, img->png_header, X_LEN, Y_LEN, 8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-	png_write_info(img->png, img->png_header);
-	img->bitmap = map;
-
-	png_write_image(img->png, img->bitmap);
-	png_write_end(img->png, img->png_header);
-	
-	int i;
-	for (i = 0; i < Y_LEN; ++i) {
-		png_free(img->png, img->bitmap[i]);
-	}
-	png_free(img->png, img->bitmap);
-	
-	png_destroy_write_struct(&img->png, &img->png_header);
-	fclose(img->file_ptr);
-}
-#endif
-
 // Read image file is in variable "image"
 static xywh_cont_t* make_filter_image(Settings *s, TileImage_t* image, int surface, int read, int cycle)
 {
-	// TODO: Consider making this not write images to disk
-
 	// create greyscale image for gaussian
 	TileImage_t* outimg = create_gray_image(NULL, s->output, "filter", surface, read, cycle);
 	size_t n;
@@ -849,8 +850,11 @@ static xywh_cont_t* make_filter_image(Settings *s, TileImage_t* image, int surfa
 
 	// Detect ROI by 4 connected labelling
 	xywh_cont_t* objs = connected_four(outimg->bitmap, png_get_image_width(image->png, image->png_header), png_get_image_height(image->png, image->png_header));
-	//write_close_image(outimg);
-	nowrite_close_image(outimg);
+	if (s->dump_label_image) {
+		write_close_image(outimg);
+	} else {
+		nowrite_close_image(outimg);
+	}
 	return objs;
 }
 
@@ -859,7 +863,7 @@ static void make_filter_read(Settings *s, int isurface, int iread)
 	fprintf(stderr, "entering filter loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
 	int icycle;
 	
-	s->read_length[iread] = 100; // HACK!
+	s->read_length[iread] = READ_LEN; // HACK!
 	int min = s->min_cycle_idx != -1 ? s->min_cycle_idx : 0;
 	int max = s->read_length[iread];
 	if ( s->max_cycle_idx != -1 ) {
@@ -952,7 +956,7 @@ static void make_rtree_read(Settings* s, int isurface, int iread, struct Node* r
 {
 	fprintf(stderr, "entering rtree loop read %d\n", iread);
 
-	s->read_length[iread] = 100; // HACK!
+	s->read_length[iread] = READ_LEN; // HACK!
 
 	int icycle;
 	for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
@@ -1210,16 +1214,13 @@ static void calculate_filter(Settings *s)
 int main(int argc, char **argv)
 {
 	Settings settings;
-	int dumpFilter = 0;
 	char *cmd = NULL;
 
-	settings.filter = NULL;
-	settings.quiet = 0;
-	settings.dump = 0;
+	settings.quiet = false;
 	settings.calculate_i = false;
 	settings.calculate_ii = false;
 	settings.apply = false;
-	settings.qcfail = 0;
+	settings.qcfail = false;
 	settings.snp_file = NULL;
 	settings.snp_hash = NULL;
 	settings.output = NULL;
@@ -1233,6 +1234,7 @@ int main(int argc, char **argv)
 	settings.min_cycle_idx = -1;
 	settings.max_cycle_idx = -1;
 	settings.compress = 1;
+	settings.dump_label_image = false;
 
 	static struct option long_options[] = {
 		{"snp_file", required_argument, 0, 's'},
@@ -1252,8 +1254,6 @@ int main(int argc, char **argv)
 		switch (c) {
 			case 'v':	display("spatial_filter: Version %s\n", version);
 						exit(0);
-			case 'd':	settings.dump = 1; ncmd++; break;
-			case 'D':	dumpFilter = 1; ncmd++; break;
 			case 'c':	settings.calculate_i = true; ncmd++; break;
 			case 'C':	settings.calculate_ii = true; ncmd++; break;
 			case 'a':	settings.apply = true; ncmd++; break;
@@ -1261,12 +1261,12 @@ int main(int argc, char **argv)
 			case 'u':	settings.compress = 0;		break;
 			case 'o':	settings.output = optarg;	break;
 			case 's':	settings.snp_file = optarg;	break;
-			case 'F':	settings.filter = optarg;	break;
 			case 'q':	settings.quiet = 1;			break;
 			case 'e':	settings.surface = atoi(optarg); break;
 			case 'r':	settings.read = atoi(optarg); break;
 			case 'm':	settings.min_cycle_idx = atoi(optarg) - 1; break;
 			case 'M':	settings.max_cycle_idx = atoi(optarg); break;
+			case 'd':	settings.dump_label_image = true; break;
 			case 'h':
 			case '?':	usage(0);					break;
 			default:	display("ERROR: Unknown option %c\n", c);
@@ -1282,9 +1282,7 @@ int main(int argc, char **argv)
 
 	if (optind < argc) settings.in_bam_file = argv[optind];
 
-	if (!settings.in_bam_file && !dumpFilter) die("Error: no BAM file specified\n");
-
-	if (!settings.filter && (dumpFilter || settings.apply)) die("Error: no filter file specified\n");
+	if (!settings.in_bam_file && (settings.calculate_i || settings.apply) ) die("Error: no BAM file specified\n");
 
 	// create pseudo command line
 	if (settings.calculate_i) {
@@ -1292,7 +1290,6 @@ int main(int argc, char **argv)
 		strcat(cmd, argv[0]);
 		strcat(cmd, " -c ");
 		if (settings.snp_file)                   { strcat(cmd, " -s "); strcat(cmd, settings.snp_file); }
-		if (settings.filter)                     { strcat(cmd, " -F "); strcat(cmd, settings.filter); }
 		strcat(cmd, " ");
 		strcat(cmd, settings.in_bam_file);
 		if (strlen(cmd) > 2047) die("Command line too big");
@@ -1304,7 +1301,6 @@ int main(int argc, char **argv)
 		if (settings.qcfail)    { strcat(cmd, " -f "); }
 		if (!settings.compress) { strcat(cmd, " -u "); }
 		if (settings.output)    { strcat(cmd, " -o "); strcat(cmd, settings.output); }
-		if (settings.filter)    { strcat(cmd, " -F "); strcat(cmd, settings.filter); }
 		strcat(cmd, " ");
 		if (settings.in_bam_file) strcat(cmd, settings.in_bam_file);
 		if (strlen(cmd) > 2047) die("Command line too big");
