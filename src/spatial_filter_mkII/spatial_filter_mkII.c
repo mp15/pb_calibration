@@ -1023,8 +1023,8 @@ bool ellipse_hit(const struct Rect circle, int points[2])
 {
 	double a = (circle.boundary[2] - circle.boundary[0])/2.0;
 	double b = (circle.boundary[3] - circle.boundary[1])/2.0;
-	double x = (double)points[0] - circle.boundary[0] + a;
-	double y = (double)points[1] - circle.boundary[1] + b;
+	double x = (double)points[0] - (circle.boundary[0] + a);
+	double y = (double)points[1] - (circle.boundary[1] + b);
 	
 	double in = ((x*x)/(a*a)) + ((y*y)/(b*b));
 	
@@ -1040,6 +1040,7 @@ int filter_read_callback(const struct Rect r, int64_t id, void* arg)
 		if (entry->idmm == 0) {
 			// Kill all INDELs in this version
 			s->filter = true;
+			return 0; // No further filters need be considered
 		} else {
 			// Mismatch? flatten just that cycle
 			int cycle = entry->cycle;
@@ -1049,7 +1050,7 @@ int filter_read_callback(const struct Rect r, int64_t id, void* arg)
 			}
 		}
 	}
-	return 0;
+	return 1;
 }
 
 static int filter_bam_inner(samfile_t * fp_in_bam, samfile_t * fp_out_bam,
@@ -1130,6 +1131,85 @@ static int filter_bam(Settings * s)
 	
 	samclose(fp_out_bam);
 	samclose(fp_in_bam);
+	return 0;
+}
+
+
+typedef struct state_dbg {
+	bool idfilter;
+	bool mmfilter;
+	int hit;
+	int points[2];
+} state_dbg_t;
+
+
+int filter_debug_callback(const struct Rect r, int64_t id, void* arg)
+{
+	rtree_entry_t* entry = (rtree_entry_t*) id;
+	state_dbg_t* s = (state_dbg_t*) arg;
+	if (ellipse_hit(r, s->points)) {
+		s->hit++;
+		if (entry->idmm == 0) {
+			// Kill all INDELs in this version
+			s->idfilter = true;
+			return 0; // No further filters need be considered
+		} else {
+			// Mismatch? flatten just that cycle
+			s->mmfilter = true;
+		}
+	}
+	return 1;
+}
+
+#define ROWBINARYSET_NODS(x,y,value_array) value_array[y][x/(8)]|=1<<(x)%8
+
+static int dump_object_map(Settings * s)
+{
+	struct Node* rtrees[N_SURFACES];
+	
+	make_rtree(s, rtrees);
+		
+	int surf;
+	for (surf = 0; surf < N_SURFACES; ++surf) {
+		int y;
+		TileImage_t result_any;
+		TileImage_t result_id;
+		TileImage_t result_mm;
+		create_image(&result_any, s->output, "res", surf, 0, 0);
+		create_image(&result_id, s->output, "res_id", surf, 0, 0);
+		create_image(&result_mm, s->output, "res_mm", surf, 0, 0);
+
+		for (y = 0; y < Y_LEN; ++y) {
+			int x;
+			for (x = 0; x < X_LEN; ++x) {
+				const struct Node* rtree = rtrees[surf];
+				struct Rect search_rect = {
+					{x, y, x, y}
+				};
+				
+				state_dbg_t* s = (state_dbg_t*)malloc(sizeof(state_dbg_t));
+				s->hit = 0;
+				s->idfilter = false;
+				s->mmfilter = false;
+				s->points[0] = x; s->points[1] = y;
+				
+				if (RTreeSearch(rtree, &search_rect, &filter_debug_callback, s))
+				{
+					ROWBINARYSET_NODS(x,y,result_any.bitmap);
+				}
+				if (s->idfilter) {
+					ROWBINARYSET_NODS(x,y,result_id.bitmap);
+				}
+				if (s->mmfilter) {
+					ROWBINARYSET_NODS(x,y,result_mm.bitmap);
+				}
+			}
+		}
+		write_close_image(&result_any);
+		write_close_image(&result_id);
+		write_close_image(&result_mm);
+	}
+	
 	return 0;
 }
 
@@ -1235,6 +1315,7 @@ int main(int argc, char **argv)
 	settings.max_cycle_idx = -1;
 	settings.compress = 1;
 	settings.dump_label_image = false;
+	bool dump_obj_map = false;
 
 	static struct option long_options[] = {
 		{"snp_file", required_argument, 0, 's'},
@@ -1267,6 +1348,7 @@ int main(int argc, char **argv)
 			case 'm':	settings.min_cycle_idx = atoi(optarg) - 1; break;
 			case 'M':	settings.max_cycle_idx = atoi(optarg); break;
 			case 'd':	settings.dump_label_image = true; break;
+			case 'D':	dump_obj_map = true; break;
 			case 'h':
 			case '?':	usage(0);					break;
 			default:	display("ERROR: Unknown option %c\n", c);
@@ -1335,6 +1417,10 @@ int main(int argc, char **argv)
 
 	if (settings.apply) {
 		filter_bam(&settings);
+	}
+	
+	if (dump_obj_map) {
+		dump_object_map(&settings);
 	}
 
 	if (NULL != settings.working_dir) free(settings.working_dir);
