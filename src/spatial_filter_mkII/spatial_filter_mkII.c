@@ -149,7 +149,7 @@ typedef struct TileImage {
 static const int X_LEN = (2048*3+100)/DOWNSAMPLE_AMOUNT;
 static const int Y_LEN = (10000*16+100)/DOWNSAMPLE_AMOUNT;
 
-#define ROWBINARYSET(x,y,value_array) value_array[y/DOWNSAMPLE_AMOUNT][x/(8*DOWNSAMPLE_AMOUNT)]|=1<<(x/DOWNSAMPLE_AMOUNT)%8
+#define ROWBINARYSET(x,y,value_array) value_array[y/DOWNSAMPLE_AMOUNT][x/(8*DOWNSAMPLE_AMOUNT)]|=128>>(x/DOWNSAMPLE_AMOUNT)%8
 
 static TileImage_t* create_image(TileImage_t* existing, const char* prefix, const char* ftype, int surface, int read, int cycle)
 {
@@ -1161,7 +1161,7 @@ int filter_debug_callback(const struct Rect r, int64_t id, void* arg)
 	return 1;
 }
 
-#define ROWBINARYSET_NODS(x,y,value_array) value_array[y][x/(8)]|=1<<(x)%8
+#define ROWBINARYSET_NODS(x,y,value_array) value_array[y][x/(8)]|=128>>(x)%8
 
 static int dump_object_map(Settings * s)
 {
