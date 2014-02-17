@@ -1044,7 +1044,7 @@ int filter_read_callback(const struct Rect r, int64_t id, void* arg)
 		} else {
 			// Mismatch? flatten just that cycle
 			int cycle = entry->cycle;
-			if ( s->read->core.l_qseq > cycle ) {
+			if ( s->read->core.l_qseq > cycle && (((s->read->core.flag&BAM_FREVERSE) == BAM_FREVERSE) == (entry->read == 1) ) ) {
 				bam1_seq_seti(bam1_seq(s->read), cycle, 15 /*'N'*/);
 				bam1_qual(s->read)[cycle] =  0;
 			}
