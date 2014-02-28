@@ -104,7 +104,7 @@
 
 #define REGION_STATE_MASK  (REGION_STATE_INSERTION | REGION_STATE_DELETION)  // region mask used to filter reads
 
-#define READ_LEN 100
+#define READ_LEN 101
 
 typedef struct {
 	char *cmdline;
@@ -324,13 +324,15 @@ static void nowrite_close_image(TileImage_t* img)
 }
 
 
-static bool update_surface_cycle_image(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_indel_image, int read, int x, int y, int *read_mismatch) {
+static bool update_surface_cycle_image(Settings *s, TileImage_t** row_mismatch_image, TileImage_t** row_insertion_image, TileImage_t** row_deletion_image, int read, int x, int y, int *read_mismatch) {
 	int cycle;
 
 	for (cycle = 0; cycle < s->read_length[read]; cycle++) {
-		if (read_mismatch[cycle] & (BASE_INSERTION|BASE_DELETION)) {
-			ROWBINARYSET(x,y,row_indel_image[read][cycle].bitmap);
-		} else if (!(read_mismatch[cycle]&BASE_KNOWN_SNP) && (read_mismatch[cycle] & BASE_MISMATCH) ){
+		if (read_mismatch[cycle] & (BASE_INSERTION)) {
+			ROWBINARYSET(x,y,row_insertion_image[read][cycle].bitmap);
+		} else if (read_mismatch[cycle] & (BASE_DELETION)) {
+			ROWBINARYSET(x,y,row_deletion_image[read][cycle].bitmap);
+		} else if (!(read_mismatch[cycle]&BASE_KNOWN_SNP) && (read_mismatch[cycle] & BASE_MISMATCH) ) {
 			ROWBINARYSET(x,y,row_mismatch_image[read][cycle].bitmap);
 		}
 	}
@@ -348,7 +350,8 @@ static bool update_surface_cycle_image(Settings *s, TileImage_t** row_mismatch_i
  */
 static const int N_SURFACES = 2;
 
-static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)], TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)], int *ntiles, size_t * nreads)
+static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)], TileImage_t* tile_img_insertion[N_SURFACES][(N_READS-1)],
+							 TileImage_t* tile_img_deletion[N_SURFACES][(N_READS-1)], int *ntiles, size_t * nreads)
 {
 	int lane = -1;
 
@@ -370,11 +373,13 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 			fprintf(stderr, "entering image init loop read %d, s->read_length %d\n", iread, s->read_length[iread]);
 			s->read_length[iread] = READ_LEN; // HACK!
 			tile_img_mismatch[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
-			tile_img_indel[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
+			tile_img_insertion[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
+			tile_img_deletion[isurface][iread] = calloc(s->read_length[iread], sizeof(TileImage_t));
 			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
 				fprintf(stderr, "trace: setting up image: surface %d, read %d, cycle %d\n", isurface, iread, icycle);
 				if (create_image(&tile_img_mismatch[isurface][iread][icycle], s->output, "mm", isurface, iread, icycle) == NULL) die("ERROR: allocating image memory surface %i read %i cycle %i.\n", isurface, iread, icycle);
-				if (create_image(&tile_img_indel[isurface][iread][icycle], s->output, "id", isurface, iread, icycle) == NULL) die("ERROR: allocating image memory surface %i read %i cycle %i.\n", isurface, iread, icycle);
+				if (create_image(&tile_img_insertion[isurface][iread][icycle], s->output, "in", isurface, iread, icycle) == NULL) die("ERROR: allocating image memory surface %i read %i cycle %i.\n", isurface, iread, icycle);
+				if (create_image(&tile_img_deletion[isurface][iread][icycle], s->output, "dl", isurface, iread, icycle) == NULL) die("ERROR: allocating image memory surface %i read %i cycle %i.\n", isurface, iread, icycle);
 			}
 		}
 	}
@@ -427,7 +432,7 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 			die("Error: Inconsistent lane within bam file.\nHave %d, previously it was %d.\n", bam_lane, lane);
 		}
 
-		if (!update_surface_cycle_image(s, tile_img_mismatch[surface], tile_img_indel[surface], (bam_read-1), bam_x, bam_y, bam_read_mismatch)) {
+		if (!update_surface_cycle_image(s, tile_img_mismatch[surface], tile_img_insertion[surface], tile_img_deletion[surface], (bam_read-1), bam_x, bam_y, bam_read_mismatch)) {
 			die("ERROR: updating image values for surface %i.\n", surface);
 		}
 		nreads_bam++;
@@ -439,7 +444,8 @@ static void make_tile_images(Settings *s, samfile_t *fp_bam, TileImage_t* tile_i
 		for(iread=0; iread<(N_READS-1); ++iread) {
 			for(icycle=0; icycle < s->read_length[iread]; ++icycle) {
 				write_close_image(&tile_img_mismatch[isurface][iread][icycle]);
-				write_close_image(&tile_img_indel[isurface][iread][icycle]);
+				write_close_image(&tile_img_deletion[isurface][iread][icycle]);
+				write_close_image(&tile_img_insertion[isurface][iread][icycle]);
 			}
 		}
 	}
@@ -873,13 +879,17 @@ static void make_filter_read(Settings *s, int isurface, int iread)
 	for(icycle=min; icycle < max; ++icycle) {
 		// Load images
 		char* buf_mm = NULL;
-		char* buf_id = NULL;
+		char* buf_in = NULL;
+		char* buf_dl = NULL;
 		asprintf(&buf_mm, "%s_mm_%d_%d_%d.png",s->output, isurface, iread, icycle);
-		asprintf(&buf_id, "%s_id_%d_%d_%d.png",s->output, isurface, iread, icycle);
+		asprintf(&buf_in, "%s_in_%d_%d_%d.png",s->output, isurface, iread, icycle);
+		asprintf(&buf_dl, "%s_dl_%d_%d_%d.png",s->output, isurface, iread, icycle);
 		TileImage_t* image_mm = read_png_image(buf_mm);
-		TileImage_t* image_id = read_png_image(buf_id);
+		TileImage_t* image_in = read_png_image(buf_in);
+		TileImage_t* image_dl = read_png_image(buf_dl);
 		free(buf_mm);
-		free(buf_id);
+		free(buf_in);
+		free(buf_dl);
 
 		// Get objects in image
 		xywh_cont_t* obj_mm = make_filter_image(s, image_mm, isurface, iread, icycle);
@@ -892,14 +902,24 @@ static void make_filter_read(Settings *s, int isurface, int iread)
 		xywh_cont_free(obj_mm);
 		
 		// Get objects in image
-		xywh_cont_t* obj_id = make_filter_image(s, image_id, isurface, iread, icycle);
+		xywh_cont_t* obj_in = make_filter_image(s, image_in, isurface, iread, icycle);
 		// Write to file
-		char* obj_id_buf = NULL;
-		asprintf(&obj_id_buf, "%s_id_%d_%d_%d.obj",s->output, isurface, iread, icycle);
-		FILE* obj_id_file = fopen(obj_id_buf,"w");
-		fwrite_xywh_cont(obj_id, obj_id_file);
-		fclose(obj_id_file);
-		xywh_cont_free(obj_id);
+		char* obj_in_buf = NULL;
+		asprintf(&obj_in_buf, "%s_in_%d_%d_%d.obj",s->output, isurface, iread, icycle);
+		FILE* obj_in_file = fopen(obj_in_buf,"w");
+		fwrite_xywh_cont(obj_in, obj_in_file);
+		fclose(obj_in_file);
+		xywh_cont_free(obj_in);
+
+		// Get objects in image
+		xywh_cont_t* obj_dl = make_filter_image(s, image_dl, isurface, iread, icycle);
+		// Write to file
+		char* obj_dl_buf = NULL;
+		asprintf(&obj_dl_buf, "%s_dl_%d_%d_%d.obj",s->output, isurface, iread, icycle);
+		FILE* obj_dl_file = fopen(obj_dl_buf,"w");
+		fwrite_xywh_cont(obj_dl, obj_dl_file);
+		fclose(obj_dl_file);
+		xywh_cont_free(obj_dl);
 	}
 }
 
@@ -1274,14 +1294,15 @@ static void calculate_filter(Settings *s)
 
 	// One per surface
 	TileImage_t* tile_img_mismatch[N_SURFACES][(N_READS-1)];
-	TileImage_t* tile_img_indel[N_SURFACES][(N_READS-1)];
+	TileImage_t* tile_img_insertion[N_SURFACES][(N_READS-1)];
+	TileImage_t* tile_img_deletion[N_SURFACES][(N_READS-1)];
 
 	fp_input_bam = samopen(s->in_bam_file, "rb", 0);
 	if (NULL == fp_input_bam) {
 		die("ERROR: can't open bam file %s: %s\n", s->in_bam_file, strerror(errno));
 	}
 
-	make_tile_images(s, fp_input_bam, tile_img_mismatch, tile_img_indel, &ntiles, &nreads);
+	make_tile_images(s, fp_input_bam, tile_img_mismatch, tile_img_insertion, tile_img_deletion, &ntiles, &nreads);
 
 	/* close the bam file */
 	samclose(fp_input_bam);
